@@ -13,7 +13,7 @@ use serde_json::Value;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> (--shell <cmd> | --shell-env <VAR>) [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--no-force-fresh-logon] [--inject-run]"
+        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> (--shell <cmd> | --shell-env <VAR>) [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--force-fresh-logon|--no-force-fresh-logon] [--inject-run]"
     );
     std::process::exit(2);
 }
@@ -232,11 +232,16 @@ fn main() -> ExitCode {
                 .unwrap_or("180")
                 .parse::<u64>()
                 .unwrap_or_else(|_| usage());
-            // Default ON: disconnected single-user sessions ignore AlternateShell.
-            // Lab logoff pass completes with drain-only hold (TransportClosed).
-            // Opt out with `--no-force-fresh-logon`. Win+R stays opt-in (`--inject-run`).
-            let force_fresh_logon = !has_flag(&args, "--no-force-fresh-logon");
-            let inject_run_dialog = has_flag(&args, "--inject-run");
+            // Prefer explicit flags from the TS façade. Default ON when neither is set
+            // so disconnected single-user sessions still get a fresh AlternateShell.
+            let force_fresh_logon = if has_flag(&args, "--no-force-fresh-logon") {
+                false
+            } else if has_flag(&args, "--force-fresh-logon") {
+                true
+            } else {
+                true
+            };
+            let inject_run_dialog = !has_flag(&args, "--no-inject-run");
             let rdpdr_share_dir = arg_value(&args, "--rdpdr-dir").map(PathBuf::from);
 
             eprintln!(

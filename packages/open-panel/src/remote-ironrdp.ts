@@ -211,8 +211,12 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
     if (input.workDir?.trim()) args.push('--work-dir', input.workDir.trim());
     if (input.domain?.trim()) args.push('--domain', input.domain.trim());
     if (input.rdpdrDir?.trim()) args.push('--rdpdr-dir', input.rdpdrDir.trim());
+    // Always pass an explicit flag so CLI default flips cannot re-enable lab-abort paths.
+    // Always pass an explicit force flag so CLI default churn cannot flip behavior.
     if (input.forceFreshLogon === false) args.push('--no-force-fresh-logon');
+    else args.push('--force-fresh-logon');
     if (input.injectRun) args.push('--inject-run');
+    else args.push('--no-inject-run');
 
     const result = spawnSync(bin, args, {
         encoding: 'utf8',
