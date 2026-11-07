@@ -1,0 +1,127 @@
+<template>
+    <div data-open-panel="webui-root" class="op-root" data-theme="dark">
+        <main class="op-main">
+            <header class="op-head">
+                <p class="op-brand">
+                    OpenPanel
+                </p>
+                <h1>
+                    {{ title }}
+                </h1>
+                <p>
+                    {{ lead }}
+                </p>
+            </header>
+            <Card :title="statusCardTitle" :description="statusCardDesc">
+                <div class="op-stats">
+                    <div class="op-stat">
+                        <div class="op-stat__label">
+                            {{ hostLabel }}
+                        </div>
+                        <div class="op-stat__value">
+                            {{ hostText }}
+                        </div>
+                    </div>
+                    <div class="op-stat">
+                        <div class="op-stat__label">
+                            {{ roleLabel }}
+                        </div>
+                        <div class="op-stat__value">
+                            {{ roleText }}
+                        </div>
+                    </div>
+                    <div class="op-stat">
+                        <div class="op-stat__label">
+                            {{ entryLabel }}
+                        </div>
+                        <div class="op-stat__value op-stat__value--code">
+                            {{ entryText }}
+                        </div>
+                    </div>
+                </div>
+                <Alert tone="info" roleName="status" :title="readyTitle" :description="readyDesc" />
+            </Card>
+        </main>
+    </div>
+</template>
+<style>
+html,
+body {
+    width: 100%;
+    min-height: 100%;
+    margin: 0;
+    padding: 0;
+}
+.op-root {
+    min-height: 100vh;
+    box-sizing: border-box;
+    color: var(--vmz-text-ink, #e7f2ec);
+    background:
+        radial-gradient(circle at 88% 12%, rgba(61, 155, 110, 0.18), transparent 40%),
+        linear-gradient(160deg, #101a16, #0b1210 60%, #121c18);
+}
+.op-main {
+    width: min(40rem, calc(100% - 2rem));
+    margin: 0 auto;
+    padding: 3rem 1rem 2.5rem;
+}
+.op-brand {
+    margin: 0 0 0.75rem;
+    color: #54ad7f;
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.op-head h1 {
+    margin: 0 0 0.45rem;
+    font-size: clamp(2rem, 4vw, 2.75rem);
+    letter-spacing: 0.02em;
+}
+.op-head p {
+    margin: 0.35rem 0 0;
+    color: var(--vmz-text-steel, #9bb5a8);
+    line-height: 1.55;
+}
+.op-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.op-stat {
+    padding: 0.75rem;
+    border: 1px solid var(--vmz-line-default, #2e4038);
+    border-radius: 0.55rem;
+    background: rgba(8, 14, 12, 0.35);
+}
+.op-stat__label {
+    color: var(--vmz-text-steel, #9bb5a8);
+    font-size: 0.75rem;
+}
+.op-stat__value {
+    margin-top: 0.25rem;
+    font-size: 1rem;
+}
+.op-stat__value--code {
+    font-family: var(--vmz-font-mono, Consolas, monospace);
+    font-size: 0.9rem;
+    color: #54ad7f;
+}
+</style>
+<script client>
+export default class IndexPage {
+    title = 'Local ops endpoint';
+    lead = 'Server WebUI for services, sites, processes, and logs on this machine.';
+    statusCardTitle = 'Host status';
+    statusCardDesc = 'Placeholder surface for the single-machine server role.';
+    hostLabel = 'Role';
+    hostText = 'open-panel server';
+    roleLabel = 'Surface';
+    roleText = 'WebUI';
+    entryLabel = 'Package';
+    entryText = '@wae/open-panel-webui';
+    readyTitle = 'Ready';
+    readyDesc = 'Domain inventory arrives in later commits. This page is produced by the VMZ static delivery.';
+}
+</script>
