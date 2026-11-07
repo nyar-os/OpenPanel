@@ -1,43 +1,57 @@
 //! Pure-Rust RDP client surface for OpenPanel Windows remote install.
 //!
 //! Built on [IronRDP](https://github.com/Devolutions/IronRDP) (`ironrdp-connector` +
-//! `ironrdp-blocking`). There is **no** `mstsc` / FreeRDP / `wfreerdp` CLI wrapper.
+//! `ironrdp-blocking` + `ironrdp-session`). There is **no** `mstsc` / FreeRDP /
+//! `wfreerdp` CLI wrapper.
 //!
-//! ## Current layer
+//! ## Layers
 //!
 //! - TCP connect to `:3389`
 //! - X.224 / MCS / GCC negotiation (`connect_begin`)
 //! - TLS upgrade
 //! - CredSSP / NLA (`connect_finalize`)
-//! - Connection finalization to an active session result
+//! - Connection finalization to an active session
+//! - Optional [`Config::alternate_shell`](ironrdp_connector::Config::alternate_shell)
+//!   remote process via the Client Info PDU, then ActiveStage until disconnect
 //!
-//! ## Next layers (install path)
+//! ## Payload delivery
 //!
-//! 1. Deliver payload via RDPDR or clipboard / alternate shell staging
-//! 2. Set `Config::alternate_shell` to run `powershell.exe -File …`
-//! 3. Observe exit via a redirected channel or a pull-back sentinel
-//! 4. Expose the same API through the N-API boundary for `open-panel remote install`
+//! MS-RDPBCGR caps `AlternateShell` at 512 bytes, so install payloads cannot ride
+//! inside the shell string. Controllers should either:
+//!
+//! 1. Point `alternate_shell` at a short bootstrap that downloads an install
+//!    script from a URL the remote can reach (controller ephemeral HTTP, npm,
+//!    or an internal artifact URL), or
+//! 2. Pass a known remote filesystem path once RDPDR drive redirect lands.
+//!
+//! OpenSSH on the target is never required.
 
 #![deny(missing_docs)]
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ironrdp_blocking::Framed;
 use ironrdp_connector::sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use ironrdp_connector::{
     ClientConnector, ConnectionOutcome, ConnectionResult, Credentials, DesktopSize, ServerName,
 };
+use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::gcc::{ConnectionType, KeyboardType};
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp_session::image::DecodedImage;
+use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName as RustlsServerName, UnixTime};
 use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, Error as TlsError, SignatureScheme, StreamOwned};
 use serde::Serialize;
 use x509_cert::der::Decode as _;
+
+/// MS-RDPBCGR Client Info `AlternateShell` / `WorkingDir` max length including NUL.
+pub const ALTERNATE_SHELL_MAX_BYTES: usize = 512;
 
 /// Errors produced by the OpenPanel RDP client.
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +80,9 @@ pub enum Error {
     /// IronRDP connector failure (X.224 / CredSSP / MCS / …).
     #[error("rdp connector: {0}")]
     Connector(String),
+    /// IronRDP active-session failure.
+    #[error("rdp session: {0}")]
+    Session(String),
     /// Server redirected the session and this client does not follow yet.
     #[error("rdp redirection is not implemented yet")]
     Redirection,
@@ -115,6 +132,8 @@ pub struct RdpConnectOptions {
     pub work_dir: String,
     /// TCP / handshake timeouts.
     pub timeout: Duration,
+    /// How long to keep the active session after connect (install / shell lifetime).
+    pub session_timeout: Duration,
 }
 
 impl Default for RdpConnectOptions {
@@ -131,6 +150,7 @@ impl Default for RdpConnectOptions {
             alternate_shell: String::new(),
             work_dir: String::new(),
             timeout: Duration::from_secs(20),
+            session_timeout: Duration::from_secs(180),
         }
     }
 }
@@ -163,6 +183,50 @@ pub struct HandshakeReport {
     pub notes: Vec<String>,
 }
 
+/// Why an alternate-shell session ended.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecEndReason {
+    /// Server sent a graceful terminate (typical when the shell exits).
+    ServerTerminate,
+    /// Wall-clock `session_timeout` elapsed while the session was still open.
+    SessionTimeout,
+    /// TCP read went idle (WouldBlock) after the configured read timeout.
+    ReadIdle,
+    /// Transport closed without an explicit terminate PDU.
+    TransportClosed,
+}
+
+/// Machine-readable alternate-shell execution report (no secrets).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecReport {
+    /// Whether the session was established and the shell request was accepted.
+    pub ok: bool,
+    /// Target host.
+    pub host: String,
+    /// Target port.
+    pub port: u16,
+    /// Resolved socket address.
+    pub remote_addr: String,
+    /// Local socket address.
+    pub local_addr: String,
+    /// Alternate shell that was requested (truncated when very long).
+    pub alternate_shell: String,
+    /// Working directory sent with the shell.
+    pub work_dir: String,
+    /// Protocol layers completed.
+    pub layers: Vec<&'static str>,
+    /// How the active stage ended.
+    pub end_reason: ExecEndReason,
+    /// Wall time spent in the active stage.
+    pub elapsed_ms: u64,
+    /// Number of ActiveStage response frames written back to the server.
+    pub response_frames: u64,
+    /// Human notes / delivery reminders.
+    pub notes: Vec<String>,
+}
+
 /// Probe TCP reachability of an RDP port without speaking RDP.
 pub fn probe_tcp(host: &str, port: u16, timeout: Duration) -> Result<SocketAddr> {
     let host = host.trim();
@@ -185,11 +249,130 @@ pub fn probe_tcp(host: &str, port: u16, timeout: Duration) -> Result<SocketAddr>
 /// Run the IronRDP connection sequence through CredSSP and session finalization.
 ///
 /// On success the TCP/TLS session is dropped after capturing the
-/// [`ConnectionResult`] metadata. Remote command execution is intentionally not
-/// attempted here yet — callers should use [`HandshakeReport::notes`].
+/// [`ConnectionResult`] metadata. Prefer [`run_alternate_shell`] when a remote
+/// process must actually start.
 pub fn handshake(options: RdpConnectOptions) -> Result<HandshakeReport> {
-    let host = options.host.trim().to_owned();
-    if host.is_empty() {
+    validate_connect_options(&options, false)?;
+    let connected = connect_session(options)?;
+    Ok(report_from_result(
+        &connected.host,
+        connected.port,
+        connected.remote_addr,
+        connected.local_addr,
+        &connected.connection,
+        connected.layers,
+    ))
+}
+
+/// Connect with `Config::alternate_shell` set and drive the ActiveStage until the
+/// remote shell exits, the transport closes, or `session_timeout` elapses.
+///
+/// The shell string must fit MS-RDPBCGR's 512-byte limit. Large payloads belong
+/// in a URL fetch or a future RDPDR stage, not in this field.
+pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
+    validate_connect_options(&options, true)?;
+    let shell = options.alternate_shell.clone();
+    let work_dir = options.work_dir.clone();
+    let session_timeout = options.session_timeout;
+    let connected = connect_session(options)?;
+
+    let mut image = DecodedImage::new(
+        PixelFormat::RgbA32,
+        connected.connection.desktop_size.width,
+        connected.connection.desktop_size.height,
+    );
+    let mut active_stage = ActiveStageBuilder {
+        static_channels: connected.connection.static_channels,
+        user_channel_id: connected.connection.user_channel_id,
+        io_channel_id: connected.connection.io_channel_id,
+        message_channel_id: connected.connection.message_channel_id,
+        share_id: connected.connection.share_id,
+        compression_type: connected.connection.compression_type,
+        enable_server_pointer: connected.connection.enable_server_pointer,
+        pointer_software_rendering: connected.connection.pointer_software_rendering,
+    }
+    .build();
+
+    let mut framed = connected.framed;
+    let started = Instant::now();
+    let mut response_frames = 0_u64;
+    let mut layers = connected.layers;
+    layers.push("alternate-shell-active-stage");
+
+    let end_reason = 'active: {
+        loop {
+            if started.elapsed() >= session_timeout {
+                break 'active ExecEndReason::SessionTimeout;
+            }
+
+            let (action, payload) = match framed.read_pdu() {
+                Ok(frame) => frame,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock || error.kind() == io::ErrorKind::TimedOut => {
+                    break 'active ExecEndReason::ReadIdle;
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::UnexpectedEof
+                        || error.kind() == io::ErrorKind::ConnectionReset =>
+                {
+                    break 'active ExecEndReason::TransportClosed;
+                }
+                Err(error) => return Err(Error::Session(error.to_string())),
+            };
+
+            let outputs = active_stage
+                .process(&mut image, action, &payload, None)
+                .map_err(|error| Error::Session(error.to_string()))?;
+
+            for out in outputs {
+                match out {
+                    ActiveStageOutput::ResponseFrame(frame) => {
+                        framed
+                            .write_all(&frame)
+                            .map_err(|error| Error::Session(error.to_string()))?;
+                        response_frames += 1;
+                    }
+                    ActiveStageOutput::Terminate(_) => {
+                        break 'active ExecEndReason::ServerTerminate;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
+
+    Ok(ExecReport {
+        ok: true,
+        host: connected.host,
+        port: connected.port,
+        remote_addr: connected.remote_addr.to_string(),
+        local_addr: connected.local_addr.to_string(),
+        alternate_shell: truncate_for_report(&shell),
+        work_dir,
+        layers,
+        end_reason,
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        response_frames,
+        notes: vec![
+            "IronRDP alternate_shell session completed.".into(),
+            "Payload delivery stays outside AlternateShell (512-byte wire cap). Use HTTP bootstrap or future RDPDR.".into(),
+            "External RDP CLIs (mstsc / freerdp / wfreerdp) are not part of this path.".into(),
+            format!("endReason={end_reason:?}"),
+        ],
+    })
+}
+
+struct ConnectedSession {
+    host: String,
+    port: u16,
+    remote_addr: SocketAddr,
+    local_addr: SocketAddr,
+    connection: ConnectionResult,
+    framed: Framed<StreamOwned<ClientConnection, TcpStream>>,
+    layers: Vec<&'static str>,
+}
+
+fn validate_connect_options(options: &RdpConnectOptions, require_shell: bool) -> Result<()> {
+    if options.host.trim().is_empty() {
         return Err(Error::InvalidArgument("host is required".into()));
     }
     if options.auth.username.trim().is_empty() {
@@ -198,7 +381,44 @@ pub fn handshake(options: RdpConnectOptions) -> Result<HandshakeReport> {
     if options.auth.password.is_empty() {
         return Err(Error::InvalidArgument("password is required".into()));
     }
+    validate_client_info_string("alternate_shell", &options.alternate_shell)?;
+    validate_client_info_string("work_dir", &options.work_dir)?;
+    if require_shell && options.alternate_shell.trim().is_empty() {
+        return Err(Error::InvalidArgument(
+            "alternate_shell is required for remote execution".into(),
+        ));
+    }
+    Ok(())
+}
 
+fn validate_client_info_string(field: &str, value: &str) -> Result<()> {
+    // Wire encoding is UTF-16LE for Unicode client info. Count UTF-16 code units
+    // plus the terminating NUL against the 512-byte (256 u16) budget conservatively
+    // by also rejecting raw byte lengths over 510 for ASCII-heavy commands.
+    let utf16_units = value.encode_utf16().count();
+    if utf16_units + 1 > ALTERNATE_SHELL_MAX_BYTES / 2 {
+        return Err(Error::InvalidArgument(format!(
+            "`{field}` exceeds MS-RDPBCGR {ALTERNATE_SHELL_MAX_BYTES}-byte limit (utf16 units including NUL)"
+        )));
+    }
+    if value.len() + 1 > ALTERNATE_SHELL_MAX_BYTES {
+        return Err(Error::InvalidArgument(format!(
+            "`{field}` exceeds MS-RDPBCGR {ALTERNATE_SHELL_MAX_BYTES}-byte limit"
+        )));
+    }
+    Ok(())
+}
+
+fn truncate_for_report(value: &str) -> String {
+    const MAX: usize = 180;
+    if value.len() <= MAX {
+        return value.to_owned();
+    }
+    format!("{}…", &value[..MAX])
+}
+
+fn connect_session(options: RdpConnectOptions) -> Result<ConnectedSession> {
+    let host = options.host.trim().to_owned();
     let mut layers = Vec::new();
     let addr = probe_tcp(&host, options.port, options.timeout)?;
     layers.push("tcp");
@@ -248,14 +468,19 @@ pub fn handshake(options: RdpConnectOptions) -> Result<HandshakeReport> {
         ConnectionOutcome::Redirected(_) => return Err(Error::Redirection),
     };
 
-    Ok(report_from_result(
-        &host,
-        options.port,
-        addr,
+    if !options.alternate_shell.trim().is_empty() {
+        layers.push("client-info-alternate-shell");
+    }
+
+    Ok(ConnectedSession {
+        host,
+        port: options.port,
+        remote_addr: addr,
         local_addr,
-        &connection,
+        connection,
+        framed: upgraded_framed,
         layers,
-    ))
+    })
 }
 
 fn report_from_result(
@@ -279,7 +504,7 @@ fn report_from_result(
         layers,
         notes: vec![
             "IronRDP handshake reached an active ConnectionResult.".into(),
-            "Next: stage install payload (RDPDR or alternate_shell) and run open-panel install without OpenSSH.".into(),
+            "Use `open-panel-rdp exec` / `run_alternate_shell` to start a remote install bootstrap.".into(),
             "External RDP CLIs (mstsc / freerdp / wfreerdp) are not part of this path.".into(),
         ],
     }
