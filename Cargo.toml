@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/napi"]
-default-members = ["crates/core", "crates/napi"]
+members = ["crates/auto-ssl", "crates/core", "crates/napi"]
+default-members = ["crates/auto-ssl", "crates/core", "crates/napi"]
 
 [workspace.package]
 version = "0.0.0"
@@ -11,11 +11,16 @@ authors = ["OpenPanel Authors"]
 repository = "https://github.com/nyar-os/OpenPanel"
 
 [workspace.dependencies]
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 thiserror = "2"
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+x509-parser = "0.17"
 # Cross-repo git dependencies must pin the full 40-character revision.
 wae = { git = "https://github.com/doki-land/wae-framework.git", rev = "b5d555cc9f492858c602b62c3bd46a6be69012d4" }
+auto-ssl = { path = "crates/auto-ssl", version = "0.0.0" }
 open-panel-core = { path = "crates/core", version = "0.0.0" }
 
 [profile.release]
