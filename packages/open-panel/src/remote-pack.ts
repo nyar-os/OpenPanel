@@ -38,7 +38,46 @@ export function packOpenPanel(): PackResult {
 
     // Package is still 0.0.0 / unpublished: always pack from the workspace.
     // When a real registry version exists later, callers can pass --from npm.
-    const cwd = path.join(workspaceRoot(), 'packages', 'open-panel');
+    // Strip `workspace:*` optionalDeps so a remote `npm install -g` outside the
+    // monorepo can resolve the tarball (optional native package is omitted).
+    const srcDir = path.join(workspaceRoot(), 'packages', 'open-panel');
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'open-panel-pack-'));
+    try {
+        copyPackTree(srcDir, cwd);
+        const pkgPath = path.join(cwd, 'package.json');
+        const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+            optionalDependencies?: Record<string, string>;
+        };
+        if (pkgJson.optionalDependencies) {
+            const cleaned: Record<string, string> = {};
+            for (const [name, version] of Object.entries(pkgJson.optionalDependencies)) {
+                if (version.startsWith('workspace:')) continue;
+                cleaned[name] = version;
+            }
+            if (Object.keys(cleaned).length) {
+                pkgJson.optionalDependencies = cleaned;
+            }
+            else {
+                delete pkgJson.optionalDependencies;
+            }
+            fs.writeFileSync(pkgPath, `${JSON.stringify(pkgJson, null, 4)}\n`, 'utf8');
+        }
+    }
+    catch (error) {
+        try {
+            fs.rmSync(cwd, { recursive: true, force: true });
+        }
+        catch {
+            // ignore cleanup
+        }
+        throw error instanceof AppError
+            ? error
+            : new AppError({
+                code: 'pack_failed',
+                capability: 'remote-install',
+                message: error instanceof Error ? error.message : String(error),
+            });
+    }
     const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     const result = spawnSync(
         npmBin,
@@ -52,6 +91,12 @@ export function packOpenPanel(): PackResult {
             ...(process.platform === 'win32' ? { shell: true as const } : {}),
         },
     );
+    try {
+        fs.rmSync(cwd, { recursive: true, force: true });
+    }
+    catch {
+        // Temp pack tree cleanup must not mask pack results.
+    }
     if (result.status !== 0) {
         const detail = [
             result.error?.message,
@@ -131,4 +176,22 @@ export function collectHosts(hosts: string[], hostsFile?: string): string[] {
 
 export function tempJobNote(): string {
     return path.join(os.tmpdir(), 'open-panel-remote');
+}
+
+function copyPackTree(srcDir: string, destDir: string): void {
+    // Only ship what `files` would include, plus package.json / lock metadata.
+    const entries = [
+        'package.json',
+        'Readme.md',
+        'License.md',
+        'postinstall.mjs',
+        'dist',
+        'locales',
+    ];
+    for (const entry of entries) {
+        const from = path.join(srcDir, entry);
+        if (!fs.existsSync(from)) continue;
+        const to = path.join(destDir, entry);
+        fs.cpSync(from, to, { recursive: true });
+    }
 }

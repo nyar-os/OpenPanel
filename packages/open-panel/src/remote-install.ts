@@ -2,10 +2,11 @@
  * Remote install orchestration for `@wae/open-panel`.
  *
  * Windows primary channel: Rust RDP stack (`open-panel-rdp` / IronRDP) with
- * `Config::alternate_shell`. Payload delivery uses an ephemeral HTTP stage
- * (or a caller-supplied `--package-url` / known remote path) because the
- * AlternateShell wire field is capped at 512 bytes. RDPDR is the next delivery
- * layer. OpenSSH on the target is not required. External RDP CLIs are forbidden.
+ * `Config::alternate_shell` after a forced fresh logon. Payload delivery prefers
+ * RDPDR (`\\tsclient\OP`) so the remote does not need to reach the controller
+ * over HTTP. Callers may still pass `--package-url`, `--remote-tarball`, or
+ * `--pack-base-url` for HTTP staging. OpenSSH is not required. External RDP
+ * CLIs are forbidden.
  */
 import { DEFAULT_WEBUI_PORT } from './defaults.js';
 import { AppError } from './errors.js';
@@ -15,9 +16,12 @@ import { packOpenPanel, passwordFromEnv } from './remote-pack.js';
 import { probeRemoteHost, type RemoteChannel, type RemoteProbeReport } from './remote-probe.js';
 import {
     buildAlternateShellBootstrap,
+    buildRdpdrAlternateShellBootstrap,
     defaultWorkDir,
+    prepareRdpdrStageDir,
     startPackStageServer,
     waitForTcp,
+    type RdpdrStageDir,
     type StageServer,
 } from './remote-stage.js';
 
@@ -44,6 +48,11 @@ export interface RemoteInstallTarget {
     remoteTarball?: string;
     /** Override controller pack base URL (e.g. public IP:port the remote can reach). */
     packBaseUrl?: string;
+    /**
+     * Force HTTP pack staging instead of the default RDPDR share.
+     * Useful when the remote can reach the controller and RDPDR is disabled.
+     */
+    preferHttpStage?: boolean;
 }
 
 export interface RemoteInstallHostResult {
@@ -121,11 +130,14 @@ async function installOneWindows(
     const serverPort = target.serverPort ?? DEFAULT_WEBUI_PORT;
     const url = `http://${target.host}:${serverPort}/login`;
     const rosterId = (target.serverId?.trim() || target.host.replace(/[^A-Za-z0-9._:-]/g, '-')).slice(0, 64);
-    const sessionTimeoutSecs = Math.max(60, Math.ceil((target.timeoutMs ?? 180_000) / 1000));
+    // Node bootstrap + npm install -g + server start needs a generous ActiveStage hold.
+    const sessionTimeoutSecs = Math.max(300, Math.ceil((target.timeoutMs ?? 420_000) / 1000));
 
     let stage: StageServer | undefined;
+    let rdpdrStage: RdpdrStageDir | undefined;
     let shell: string;
     let stageInfo: RemoteInstallHostResult['stage'];
+    let rdpdrDir: string | undefined;
 
     try {
         if (target.remoteTarball?.trim()) {
@@ -134,10 +146,25 @@ async function installOneWindows(
         else if (target.packageUrl?.trim()) {
             shell = buildAlternateShellBootstrap(target.packageUrl.trim());
         }
-        else {
+        else if (target.packBaseUrl?.trim() || target.preferHttpStage) {
+            const packBaseUrl = target.packBaseUrl?.trim();
+            let stageListenPort: number | undefined;
+            if (packBaseUrl) {
+                try {
+                    const parsed = new URL(packBaseUrl.includes('://') ? packBaseUrl : `http://${packBaseUrl}`);
+                    const portNum = Number(parsed.port);
+                    if (Number.isFinite(portNum) && portNum > 0) {
+                        stageListenPort = portNum;
+                    }
+                }
+                catch {
+                    // Invalid override URLs still flow into startPackStageServer for a clear error.
+                }
+            }
             stage = await startPackStageServer({
                 pack,
-                baseUrl: target.packBaseUrl,
+                baseUrl: packBaseUrl,
+                port: stageListenPort,
                 serverPort,
                 skipStart: target.skipStart,
             });
@@ -148,6 +175,21 @@ async function installOneWindows(
                 tarballUrl: stage.tarballUrl,
             };
         }
+        else {
+            // Default: RDPDR share (works when remote cannot dial back to the controller).
+            rdpdrStage = prepareRdpdrStageDir({
+                pack,
+                serverPort,
+                skipStart: target.skipStart,
+            });
+            rdpdrDir = rdpdrStage.dir;
+            shell = buildRdpdrAlternateShellBootstrap();
+            stageInfo = {
+                baseUrl: `\\\\tsclient\\OP`,
+                scriptUrl: `\\\\tsclient\\OP\\i.ps1`,
+                tarballUrl: `\\\\tsclient\\OP\\${rdpdrStage.tarballName}`,
+            };
+        }
 
         const exec = rdpExec({
             host: target.host,
@@ -156,6 +198,7 @@ async function installOneWindows(
             shell,
             workDir: defaultWorkDir(),
             sessionTimeoutSecs,
+            rdpdrDir,
         });
 
         if (!exec.ok) {
@@ -170,15 +213,17 @@ async function installOneWindows(
                 rosterId,
                 url,
                 error: exec.error ?? 'RDP alternate_shell session failed',
-                next: stageInfo
-                    ? `Ensure the remote can reach staging URL \`${stageInfo.baseUrl}\` (set \`OPEN_PANEL_PACK_BASE_URL\` / \`--pack-base-url\`), or pass \`--remote-tarball\` / \`--package-url\`. RDPDR delivery is not wired yet.`
+                next: rdpdrDir
+                    ? 'RDPDR staging was used. Confirm the host honors AlternateShell after force logoff and can download Node LTS from nodejs.org.'
+                    : stageInfo
+                    ? `Ensure the remote can reach staging URL \`${stageInfo.baseUrl}\` (set \`OPEN_PANEL_PACK_BASE_URL\` / \`--pack-base-url\`), or omit it to use RDPDR.`
                     : 'Check AlternateShell policy on the host and retry.',
             };
         }
 
         let serverUp = true;
         if (!target.skipStart) {
-            serverUp = await waitForTcp(target.host, serverPort, Math.min(sessionTimeoutSecs * 1000, 90_000));
+            serverUp = await waitForTcp(target.host, serverPort, Math.min(sessionTimeoutSecs * 1000, 240_000));
         }
 
         if (!serverUp) {
@@ -227,6 +272,9 @@ async function installOneWindows(
             catch {
                 // Staging teardown must not mask install results.
             }
+        }
+        if (rdpdrStage) {
+            rdpdrStage.close();
         }
     }
 }

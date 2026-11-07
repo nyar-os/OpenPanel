@@ -47,11 +47,12 @@ $startSkipped = $true
 `
         : `
 $startSkipped = $false
-$serverCmd = Get-Command open-panel -ErrorAction SilentlyContinue
-if (-not $serverCmd) { throw "open-panel not found on PATH after install" }
-$argList = @("server","--host","0.0.0.0","--port","${opts.serverPort}")
-Start-Process -FilePath $serverCmd.Source -ArgumentList $argList -WindowStyle Hidden | Out-Null
-Start-Sleep -Seconds 2
+if ($panel -like "*.js") {
+  Start-Process -FilePath "node" -ArgumentList @($panel,"server","--host","0.0.0.0","--port","${opts.serverPort}") -WindowStyle Hidden | Out-Null
+} else {
+  Start-Process -FilePath $panel -ArgumentList @("server","--host","0.0.0.0","--port","${opts.serverPort}") -WindowStyle Hidden | Out-Null
+}
+Start-Sleep -Seconds 3
 `;
 
     return `# OpenPanel RDP bootstrap (generated). Runs on the remote host only.
@@ -60,19 +61,59 @@ $ProgressPreference = "SilentlyContinue"
 $stageRoot = Join-Path $env:TEMP ("open-panel-rdp-" + [guid]::NewGuid().ToString("n"))
 New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 $tarball = Join-Path $stageRoot "${opts.tarballName}"
-$base = $PSScriptRoot
-if (-not $base) { $base = "." }
-# Controllers rewrite __OP_BASE__ to the live staging origin.
+# Controllers rewrite __OP_BASE__ to the live staging origin (http://… or \\tsclient\\OP).
 $origin = "__OP_BASE__"
-Invoke-WebRequest -UseBasicParsing -Uri ($origin.TrimEnd("/") + "/${opts.tarballName}") -OutFile $tarball
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-  throw "npm is required on the remote host for OpenPanel install (Node.js LTS)"
+$tarballSrc = if ($origin -match '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+  ($origin.TrimEnd("/") + "/${opts.tarballName}")
+} else {
+  Join-Path $origin.TrimEnd([char]92) "${opts.tarballName}"
 }
-npm install -g --omit=dev $tarball
-$panelCmd = Get-Command open-panel -ErrorAction SilentlyContinue
-if (-not $panelCmd) { throw "open-panel not found on PATH after npm install -g" }
+if ($tarballSrc -match '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+  Invoke-WebRequest -UseBasicParsing -Uri $tarballSrc -OutFile $tarball
+} else {
+  Copy-Item -LiteralPath $tarballSrc -Destination $tarball -Force
+}
+
+function Ensure-OpenPanelNode {
+  $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+  if (Get-Command npm -ErrorAction SilentlyContinue) { return }
+  # Portable Node LTS zip: no MSI UI, works over headless RDP AlternateShell.
+  $nodeVer = "v22.14.0"
+  $nodeName = "node-$nodeVer-win-x64"
+  $zip = Join-Path $stageRoot "$nodeName.zip"
+  $nodeRoot = Join-Path $env:ProgramFiles "nodejs-open-panel"
+  Invoke-WebRequest -UseBasicParsing -Uri ("https://nodejs.org/dist/$nodeVer/$nodeName.zip") -OutFile $zip
+  if (Test-Path $nodeRoot) { Remove-Item -LiteralPath $nodeRoot -Recurse -Force }
+  Expand-Archive -LiteralPath $zip -DestinationPath $stageRoot -Force
+  Move-Item -LiteralPath (Join-Path $stageRoot $nodeName) -Destination $nodeRoot
+  $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+  if ($machinePath -notlike ("*" + $nodeRoot + "*")) {
+    [Environment]::SetEnvironmentVariable("Path", ("{0};{1}" -f $nodeRoot, $machinePath), "Machine")
+  }
+  $env:Path = ("{0};{1}" -f $nodeRoot, $env:Path)
+  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "npm still missing after portable Node bootstrap into $nodeRoot"
+  }
+}
+Ensure-OpenPanelNode
+
+# Omit optional native packages: local packs may still reference workspace protocol.
+npm install -g --omit=dev --omit=optional $tarball
+$prefix = (npm prefix -g).Trim()
+$candidates = @(
+  (Join-Path $prefix "open-panel.cmd"),
+  (Join-Path $prefix "open-panel"),
+  (Join-Path $prefix "node_modules\\@wae\\open-panel\\dist\\cli.js")
+)
+$panel = $null
+foreach ($c in $candidates) { if (Test-Path -LiteralPath $c) { $panel = $c; break } }
+if (-not $panel) {
+  $panelCmd = Get-Command open-panel -ErrorAction SilentlyContinue
+  if ($panelCmd) { $panel = $panelCmd.Source }
+}
+if (-not $panel) { throw "open-panel not found after npm install -g (prefix=$prefix)" }
 # Same install path as local / npx / postinstall: write administrator + strong password.
-& $panelCmd.Source install --port ${opts.serverPort}
+if ($panel -like "*.js") { & node $panel install --port ${opts.serverPort} } else { & $panel install --port ${opts.serverPort} }
 ${startBlock}
 $result = [ordered]@{
   ok = $true
@@ -81,6 +122,7 @@ $result = [ordered]@{
   serverPort = ${opts.serverPort}
   loginUrl = ("http://0.0.0.0:${opts.serverPort}/login")
   startSkipped = $startSkipped
+  panel = $panel
   at = (Get-Date).ToString("o")
 }
 $result | ConvertTo-Json -Compress | Set-Content -Encoding utf8 (Join-Path $env:TEMP "open-panel-rdp-result.json")
@@ -118,6 +160,74 @@ export function buildAlternateShellBootstrap(scriptUrl: string): string {
         });
     }
     return shell;
+}
+
+/** RDPDR share name announced by `open-panel-rdp` (`\\tsclient\OP`). */
+export const RDPDR_SHARE_NAME = 'OP';
+
+/** Short AlternateShell that waits for RDPDR then runs `\\tsclient\OP\i.ps1`. */
+export function buildRdpdrAlternateShellBootstrap(): string {
+    // sleep gives RDPDR time to announce before the script touches \\tsclient\OP.
+    const shell =
+        `powershell.exe -NoP -EP Bypass -w Hidden -c "sleep 12; iex(gc -Raw ('\\\\tsclient\\${RDPDR_SHARE_NAME}\\i.ps1'))"`;
+    if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
+        throw new AppError({
+            code: 'invalid_argument',
+            message: `RDPDR alternate_shell bootstrap exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
+        });
+    }
+    return shell;
+}
+
+export interface RdpdrStageDir {
+    dir: string;
+    scriptPath: string;
+    tarballPath: string;
+    tarballName: string;
+    close: () => void;
+}
+
+/** Stage pack + install script into a local directory for RDPDR redirection. */
+export function prepareRdpdrStageDir(options: {
+    pack: PackResult;
+    serverPort?: number;
+    skipStart?: boolean;
+}): RdpdrStageDir {
+    const serverPort = options.serverPort ?? DEFAULT_WEBUI_PORT;
+    const skipStart = Boolean(options.skipStart);
+    const tarballPath = options.pack.tarballPath;
+    if (!fs.existsSync(tarballPath)) {
+        throw new AppError({
+            code: 'pack_failed',
+            capability: 'remote-install',
+            message: `packed tarball missing at \`${tarballPath}\``,
+            path: tarballPath,
+        });
+    }
+    const tarballName = path.basename(tarballPath);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-panel-rdpdr-'));
+    const stagedTarball = path.join(dir, tarballName);
+    fs.copyFileSync(tarballPath, stagedTarball);
+    // Install script reads the pack from the redirected share (no HTTP origin).
+    const scriptTemplate = buildInstallScript({ tarballName, serverPort, skipStart });
+    const packRoot = `\\\\tsclient\\${RDPDR_SHARE_NAME}`;
+    const scriptBody = scriptTemplate.replaceAll('__OP_BASE__', packRoot);
+    const scriptPath = path.join(dir, 'i.ps1');
+    fs.writeFileSync(scriptPath, scriptBody, 'utf8');
+    return {
+        dir,
+        scriptPath,
+        tarballPath: stagedTarball,
+        tarballName,
+        close: () => {
+            try {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+            catch {
+                // Staging cleanup must not mask install results.
+            }
+        },
+    };
 }
 
 /** Serve pack + install script until `close()` is called. */

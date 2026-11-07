@@ -23,6 +23,8 @@ export interface RdpExecInput extends RdpHandshakeInput {
     shell: string;
     workDir?: string;
     sessionTimeoutSecs?: number;
+    /** Local directory redirected as `\\tsclient\OP` via IronRDP RDPDR. */
+    rdpdrDir?: string;
 }
 
 export interface RdpHandshakeReport {
@@ -157,13 +159,15 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
     ];
     if (input.workDir?.trim()) args.push('--work-dir', input.workDir.trim());
     if (input.domain?.trim()) args.push('--domain', input.domain.trim());
+    if (input.rdpdrDir?.trim()) args.push('--rdpdr-dir', input.rdpdrDir.trim());
 
     const result = spawnSync(bin, args, {
         encoding: 'utf8',
         windowsHide: true,
         env: process.env,
         // Install sessions can outlive the default spawn sync limits on busy hosts.
-        timeout: ((input.sessionTimeoutSecs ?? 180) + 30) * 1000,
+        // force_fresh_logon adds a preparatory logoff pass before the shell session.
+        timeout: ((input.sessionTimeoutSecs ?? 180) + 90) * 1000,
     });
     return parseJson(result.stdout, result.stderr, result.status) as RdpExecReport;
 }
