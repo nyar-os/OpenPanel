@@ -1047,9 +1047,20 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     inject_at = None;
                     let command = inject_command.as_deref().unwrap_or("");
                     if logon_seen {
-                        // Short settle: long idle after logon previously hit peer RST
-                        // before inject_begin (lab ~7s TransportClosed).
-                        let pause = Duration::from_millis(if hold_after_inject { 1200 } else { 800 });
+                        // Without RDPDR keep this short (idle RST ~7s). With RDPDR the
+                        // remote needs device announce before `\\tsclient\OP\…` resolves;
+                        // drain continuously so a longer wait stays alive.
+                        let pause = if waiting_ack {
+                            Duration::from_secs(12)
+                        } else if hold_after_inject {
+                            Duration::from_millis(1200)
+                        } else {
+                            Duration::from_millis(800)
+                        };
+                        breadcrumb(&format!(
+                            "drive_active_stage:pre_inject_settle ms={}",
+                            pause.as_millis()
+                        ));
                         let until = Instant::now() + pause;
                         while Instant::now() < until {
                             if let Err(error) = drain_incoming_pdus(
@@ -1349,8 +1360,8 @@ fn inject_run_dialog_command(
     )?;
     std::thread::sleep(Duration::from_millis(400));
 
-    // Open Run, clear any leftover text, type with US scancodes (more reliable than
-    // unicode-only bursts on some Windows hosts), then Enter.
+    // Open Run, clear leftover text, nudge IME off (Ctrl+Space common on zh-CN),
+    // type the payload, then Enter.
     write_input_events(
         active_stage,
         image,
@@ -1375,8 +1386,25 @@ fn inject_run_dialog_command(
         &build_backspace_events(),
     )?;
     std::thread::sleep(Duration::from_millis(120));
+    write_input_events(
+        active_stage,
+        image,
+        framed,
+        response_frames,
+        &build_ime_off_events(),
+    )?;
+    std::thread::sleep(Duration::from_millis(200));
     write_paced_type_events(active_stage, image, framed, response_frames, command)?;
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(400));
+    write_input_events(
+        active_stage,
+        image,
+        framed,
+        response_frames,
+        &build_enter_events(),
+    )?;
+    // Second Enter: if the first only closed an IME candidate, still launch Run.
+    std::thread::sleep(Duration::from_millis(250));
     write_input_events(
         active_stage,
         image,
@@ -1469,6 +1497,16 @@ fn build_enter_events() -> Vec<FastPathInputEvent> {
     ]
 }
 
+fn build_ime_off_events() -> Vec<FastPathInputEvent> {
+    // Ctrl (0x1D) + Space (0x39): toggle/off Chinese IME so scancodes stay Latin.
+    vec![
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1D),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x39),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x39),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1D),
+    ]
+}
+
 /// US QWERTY set-1 scancode and whether Shift is required.
 fn us_scancode(ch: char) -> Option<(u8, bool)> {
     match ch {
@@ -1526,32 +1564,36 @@ fn us_scancode(ch: char) -> Option<(u8, bool)> {
     }
 }
 
+/// How a single Win+R character will be encoded on the wire.
+fn inject_char_mode(ch: char) -> &'static str {
+    // Lab: Unicode-only path punctuation produced inject_done but zero RDPDR I/O.
+    // Prefer US scancodes for every mapped key (including `\`); Unicode is fallback.
+    if us_scancode(ch).is_some() {
+        "scan"
+    } else {
+        "uni"
+    }
+}
+
 fn build_char_events(ch: char) -> Vec<FastPathInputEvent> {
-    // Win+R on lab hosts drops US scancodes for path punctuation (`\`, `%`, `&`,
-    // `:`, `>`). Prefer Unicode keyboard events for non-alphanumerics so UNC /
-    // Public paths survive inject. Letters/digits still use set-1 scancodes.
-    let use_unicode = !ch.is_ascii_alphanumeric() && ch != ' ' && ch != '.' && ch != '-';
-    if !use_unicode {
-        if let Some((code, shift)) = us_scancode(ch) {
-            let mut events = Vec::with_capacity(4);
-            if shift {
-                events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2A));
-            }
-            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), code));
-            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, code));
-            if shift {
-                events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2A));
-            }
-            return events;
+    if let Some((code, shift)) = us_scancode(ch) {
+        let mut events = Vec::with_capacity(4);
+        if shift {
+            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2A));
         }
+        events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), code));
+        events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, code));
+        if shift {
+            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2A));
+        }
+        return events;
     }
     let mut buf = [0_u16; 2];
-    let mut events = Vec::with_capacity(4);
-    for unit in ch.encode_utf16(&mut buf).iter().copied() {
-        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit));
-        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, unit));
-    }
-    events
+    ch.encode_utf16(&mut buf)
+        .iter()
+        .copied()
+        .map(|unit| FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit))
+        .collect()
 }
 
 fn write_paced_type_events(
@@ -1561,10 +1603,38 @@ fn write_paced_type_events(
     response_frames: &mut u64,
     text: &str,
 ) -> Result<()> {
+    let mut scan = 0_u32;
+    let mut uni = 0_u32;
+    let mut mode_preview = String::new();
+    for ch in text.chars() {
+        let mode = inject_char_mode(ch);
+        if mode == "scan" {
+            scan += 1;
+        } else {
+            uni += 1;
+        }
+        if mode_preview.len() < 96 {
+            let visible = match ch {
+                '\\' => "\\\\".to_owned(),
+                ' ' => "␠".to_owned(),
+                other => other.to_string(),
+            };
+            if !mode_preview.is_empty() {
+                mode_preview.push(' ');
+            }
+            mode_preview.push_str(&format!("{visible}:{mode}"));
+        }
+    }
+    let chars = text.chars().count();
+    breadcrumb(&format!(
+        "drive_active_stage:inject_type chars={chars} scan={scan} uni={uni} payload={text}"
+    ));
+    breadcrumb(&format!("drive_active_stage:inject_modes {mode_preview}"));
+
     for (index, ch) in text.chars().enumerate() {
         write_input_events(active_stage, image, framed, response_frames, &build_char_events(ch))?;
-        // Slower pace: UNC paths (`\\tsclient\...`) previously lost scancodes.
-        std::thread::sleep(Duration::from_millis(80));
+        // Slower pace: UNC paths (`\\tsclient\...`) previously lost keystrokes.
+        std::thread::sleep(Duration::from_millis(90));
         // Drain often so mid-type ServerTerminate / FastPath flood cannot pile up.
         if index % 2 == 1 {
             drain_incoming_pdus(active_stage, image, framed, response_frames)?;
@@ -1847,11 +1917,19 @@ fn attach_rdpdr_channels(
     let share_dir = normalize_rdpdr_root(share_dir)?;
 
     // Writable so the remote can leave proof / result files on the share.
+    // Announced name is `OP` → remote path `\\tsclient\OP\…` (PreferredDosName + DeviceData).
+    breadcrumb(&format!(
+        "attach_rdpdr:share name={RDPDR_SHARE_NAME} device_id={RDPDR_DEVICE_ID} root={}",
+        share_dir.display()
+    ));
     let drive = RedirectedDrive::new(RDPDR_DEVICE_ID, RDPDR_SHARE_NAME, share_dir, false)
         .map_err(|error| Error::InvalidArgument(format!("rdpdr drive: {error:?}")))?;
     let factory = WindowsRdpdrBackendFactory::new(drive);
     let backend = factory.build();
     let initial = factory.initial_drives();
+    for (id, name) in &initial {
+        breadcrumb(&format!("attach_rdpdr:announce id={id} name={name}"));
+    }
     // MS-RDPEFS requires RDPSND to be co-advertised or the server ignores RDPDR.
     let rdpsnd = Rdpsnd::new(Box::new(NoopRdpsndBackend));
     let rdpdr = Rdpdr::new(Box::new(backend), "open-panel-rdp".into()).with_drives(Some(initial));
