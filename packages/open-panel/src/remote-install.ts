@@ -16,7 +16,7 @@ import { packOpenPanel, passwordFromEnv } from './remote-pack.js';
 import { probeRemoteHost, type RemoteChannel, type RemoteProbeReport } from './remote-probe.js';
 import {
     buildAlternateShellBootstrap,
-    buildRdpdrInstallCmdShell,
+    buildInjectRdpdrLauncherShell,
     defaultWorkDir,
     prepareRdpdrStageDir,
     RDPDR_ACK_FILE,
@@ -184,12 +184,12 @@ async function installOneWindows(
                 skipStart: target.skipStart,
             });
             rdpdrDir = rdpdrStage.dir;
-            // Inline AlternateShell: sleep, Public proof, RDPDR ack, then start i.ps1.
-            // Do not launch `\\tsclient\OP\*.cmd` as the shell itself (redirect race).
-            shell = buildRdpdrInstallCmdShell();
+            // Lab: AlternateShell after force-logon is ignored. Mainline is Win+R
+            // inject of the short RDPDR launcher `\\tsclient\OP\a.cmd`.
+            shell = buildInjectRdpdrLauncherShell();
             stageInfo = {
                 baseUrl: `\\\\tsclient\\OP`,
-                scriptUrl: `\\\\tsclient\\OP\\i.ps1`,
+                scriptUrl: `\\\\tsclient\\OP\\a.cmd`,
                 tarballUrl: `\\\\tsclient\\OP\\${rdpdrStage.tarballName}`,
             };
         }
@@ -202,11 +202,11 @@ async function installOneWindows(
             workDir: defaultWorkDir(),
             sessionTimeoutSecs,
             rdpdrDir,
-            rdpdrAckFile: RDPDR_ACK_FILE,
-            // Win+R `shutdown /l` for real logoff, then Client Info AlternateShell
-            // carries the inline proof/install cmd (inject would clear AlternateShell).
+            rdpdrAckFile: rdpdrDir ? RDPDR_ACK_FILE : undefined,
+            // Force-fresh then Win+R inject (Unicode path typing). Do not rely on
+            // AlternateShell after force-logon on this lab host.
             forceFreshLogon: true,
-            injectRun: false,
+            injectRun: Boolean(rdpdrDir) || shell.includes('cmd /c'),
         });
 
         if (!exec.ok) {
