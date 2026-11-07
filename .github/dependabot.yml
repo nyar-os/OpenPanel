@@ -1,7 +1,17 @@
 version: 2
 updates:
   - package-ecosystem: "cargo"
-    directory: "/projects/sub_projects"
+    directory: "/crates/core"
+    target-branch: "dev"
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "cargo"
+    directory: "/crates/napi"
+    target-branch: "dev"
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "npm"
+    directory: "/"
     target-branch: "dev"
     schedule:
       interval: "daily"
