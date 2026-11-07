@@ -212,7 +212,8 @@ export function buildInjectPublicReadbackShell(): string {
  * Wrap with `cmd /c` so Run executes the UNC script instead of only resolving it.
  */
 export function buildInjectRdpdrLauncherShell(): string {
-    const shell = `cmd /c \\\\tsclient\\${RDPDR_SHARE_NAME}\\a.cmd`;
+    // Bare UNC `.cmd` — Run executes it, and fewer keystrokes beat mid-type terminate.
+    const shell = `\\\\tsclient\\${RDPDR_SHARE_NAME}\\a.cmd`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',

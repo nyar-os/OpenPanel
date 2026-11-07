@@ -384,6 +384,9 @@ fn is_transport_gone_msg(message: &str) -> bool {
 pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     breadcrumb("run_alternate_shell:enter");
     validate_connect_options(&options, true)?;
+    // Single-session Windows hosts terminate the older RDP when a peer connects.
+    // Serialize all local `exec` attempts for the same host.
+    let _host_lock = acquire_host_exec_lock(&options.host)?;
 
     let mut forced_fresh_logon = false;
     let mut logoff_end_reason = None;
@@ -404,9 +407,9 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
         layers_prefix.push("force-fresh-logon-gap");
         // Give Terminal Services time to tear down the logged-off session.
         // Too-short gaps have caused the next CredSSP connect to be RST (10054).
+        // Lab: parallel RDP peers also kick mid-settle — keep a longer exclusive gap.
         breadcrumb("run_alternate_shell:logoff_gap_begin");
-        // Chunked sleep so breadcrumbs show whether an external kill hits mid-gap.
-        for tick in 1..=8_u32 {
+        for tick in 1..=15_u32 {
             std::thread::sleep(Duration::from_secs(1));
             breadcrumb(&format!("run_alternate_shell:logoff_gap_tick={tick}"));
         }
@@ -480,13 +483,9 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     let mut layers = layers_prefix;
     layers.extend(active.layers);
 
-    let delivered = if ack_expected {
-        active.rdpdr_ack_seen
-    } else if desktop_for_inject {
-        active.injected
-    } else {
-        true
-    };
+    // Hard proof only: RDPDR ack readback. Win+R inject_done / ServerTerminate alone
+    // is not delivery — lab false positives claimed "verified" with ackSeen=false.
+    let delivered = ack_expected && active.rdpdr_ack_seen;
 
     Ok(ExecReport {
         ok: delivered,
@@ -509,13 +508,18 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
         rdpdr_ack_preview: active.rdpdr_ack_preview.clone(),
         notes: vec![
             if delivered {
-                "IronRDP session delivered a verified remote side-effect.".into()
+                "IronRDP session delivered a verified remote side-effect (RDPDR ack read back)."
+                    .into()
             } else if ack_expected {
                 "RDPDR ack file was not read back; remote payload did not prove.".into()
+            } else if desktop_for_inject && active.injected {
+                "Win+R inject finished on the wire but no hard proof was configured (need RDPDR ack, Public readback, or external ntfy).".into()
+            } else if desktop_for_inject {
+                "RDP session ended before the Win+R payload finished injecting.".into()
             } else {
-                "RDP session ended before the Win+R payload was injected.".into()
+                "No RDPDR ack configured; AlternateShell path cannot self-verify delivery.".into()
             },
-            "Primary proof is RDPDR write/readback of a Public marker, not ntfy.".into(),
+            "Primary proof is RDPDR write/readback of a Public marker, not inject_done.".into(),
             "force_fresh_logon clears disconnected single-user sessions before the payload pass.".into(),
             if desktop_for_inject {
                 "Win+R carries the payload on a full desktop (Client Info AlternateShell left empty)."
@@ -1047,13 +1051,11 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     inject_at = None;
                     let command = inject_command.as_deref().unwrap_or("");
                     if logon_seen {
-                        // Without RDPDR keep this short (idle RST ~7s). With RDPDR the
-                        // remote needs device announce before `\\tsclient\OP\…` resolves;
-                        // drain continuously so a longer wait stays alive.
-                        let pause = if waiting_ack {
-                            Duration::from_secs(12)
-                        } else if hold_after_inject {
-                            Duration::from_millis(1200)
+                        // Keep this short: lab peers RST/terminate ~7s of idle
+                        // after logon (12s RDPDR settle never reached inject_begin).
+                        // `a.cmd` itself waits for `\\tsclient` after launch.
+                        let pause = if hold_after_inject {
+                            Duration::from_millis(1500)
                         } else {
                             Duration::from_millis(800)
                         };
@@ -1104,11 +1106,10 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                             breadcrumb("drive_active_stage:inject_done");
                         }
                         Err(error) if is_transport_gone_msg(&error.to_string()) => {
-                            injected = true;
+                            // Incomplete inject — do not claim injected=true.
                             layers.push("inject-transport-gone");
-                            layers.push("win-r-scancode-inject");
                             breadcrumb(&format!(
-                                "drive_active_stage:inject_transport_gone hold={hold_after_inject}"
+                                "drive_active_stage:inject_transport_gone incomplete hold={hold_after_inject}"
                             ));
                             if let Some(ack_path) = rdpdr_ack_path.as_ref() {
                                 if !ack_seen {
@@ -1136,12 +1137,10 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                         Err(error)
                             if error.to_string().contains("server terminate while draining") =>
                         {
-                            injected = true;
-                            layers.push("win-r-scancode-inject");
+                            // Mid-type / mid-Enter kick (often a parallel RDP peer).
+                            // Incomplete wire inject is not delivery.
                             layers.push("inject-server-terminate");
-                            breadcrumb("drive_active_stage:inject_server_terminate");
-                            // Payload inject can race with session tear-down; still
-                            // poll RDPDR ack before declaring failure.
+                            breadcrumb("drive_active_stage:inject_server_terminate incomplete");
                             if let Some(ack_path) = rdpdr_ack_path.as_ref() {
                                 if !ack_seen {
                                     for _ in 0..15_u32 {
@@ -1770,6 +1769,78 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 /// RDPDR drive name announced to the server (`\\tsclient\OP` on Windows).
 pub const RDPDR_SHARE_NAME: &str = "OP";
 const RDPDR_DEVICE_ID: u32 = 1;
+
+/// Exclusive local lock so parallel lab agents do not kick each other off a
+/// single-session RDP host. Dropping the returned file releases the lock.
+fn acquire_host_exec_lock(host: &str) -> Result<std::fs::File> {
+    let safe: String = host
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' { ch } else { '_' })
+        .collect();
+    let dir = std::env::temp_dir().join("open-panel-rdp-locks");
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        Error::InvalidArgument(format!("host exec lock dir {}: {error}", dir.display()))
+    })?;
+    let path = dir.join(format!("{safe}.lock"));
+    let deadline = Instant::now() + Duration::from_secs(240);
+    let mut attempt = 0_u32;
+    loop {
+        attempt += 1;
+        match try_open_exclusive_lock(&path) {
+            Ok(file) => {
+                let _ = writeln!(
+                    &mut io::BufWriter::new(&file),
+                    "pid={} host={host}",
+                    std::process::id()
+                );
+                breadcrumb(&format!(
+                    "run_alternate_shell:host_lock acquired path={} attempt={attempt}",
+                    path.display()
+                ));
+                return Ok(file);
+            }
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    return Err(Error::InvalidArgument(format!(
+                        "timed out waiting for exclusive RDP host lock {}: {error}",
+                        path.display()
+                    )));
+                }
+                if attempt == 1 || attempt % 10 == 0 {
+                    breadcrumb(&format!(
+                        "run_alternate_shell:host_lock wait path={} attempt={attempt} err={error}",
+                        path.display()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn try_open_exclusive_lock(path: &std::path::Path) -> io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // dwShareMode=0: no shared read/write/delete while we hold the handle.
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .share_mode(0)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn try_open_exclusive_lock(path: &std::path::Path) -> io::Result<std::fs::File> {
+    // Best-effort: create-new; stale locks from crashed processes may need manual clear.
+    OpenOptions::new().create_new(true).write(true).open(path).or_else(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            Err(error)
+        } else {
+            OpenOptions::new().create(true).write(true).truncate(true).open(path)
+        }
+    })
+}
 
 fn connect_session(options: RdpConnectOptions) -> Result<ConnectedSession> {
     let host = options.host.trim().to_owned();
