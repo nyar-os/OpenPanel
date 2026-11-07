@@ -16,6 +16,7 @@ use wae::{
 };
 
 mod audit;
+mod roster;
 
 use audit::Summary;
 use wae::audit::Mode;
@@ -45,6 +46,17 @@ impl IpcHandler for HostIpc {
                 Ok(report) => IpcOutcome::ReplyToPage(reply(json!({ "ok": true, "data": report }))),
                 Err(error) => IpcOutcome::ReplyToPage(reply(json!({ "ok": false, "error": error.payload() }))),
             },
+            "roster.list" => match roster::list_snapshot() {
+                Ok(data) => IpcOutcome::ReplyToPage(reply(json!({ "type": "roster", "ok": true, "data": data }))),
+                Err(message) => IpcOutcome::ReplyToPage(reply(json!({ "type": "roster", "ok": false, "error": { "code": "roster_error", "message": message } }))),
+            },
+            "roster.use" => {
+                let id = request.get("id").and_then(Value::as_str).unwrap_or_default();
+                match roster::use_server(id) {
+                    Ok(data) => IpcOutcome::ReplyToPage(reply(json!({ "type": "roster", "ok": true, "data": data }))),
+                    Err(message) => IpcOutcome::ReplyToPage(reply(json!({ "type": "roster", "ok": false, "error": { "code": "roster_error", "message": message } }))),
+                }
+            }
             _ => IpcOutcome::ReplyToPage(reply(json!({ "ok": false, "error": "unknown ipc type" }))),
         }
     }

@@ -10,6 +10,8 @@
       --fg: #e7f2ec;
       --muted: #9bb5a8;
       --accent: #3d9b6e;
+      --panel: rgba(18, 32, 26, 0.72);
+      --line: rgba(155, 181, 168, 0.22);
     }
     * { box-sizing: border-box; }
     body {
@@ -20,12 +22,11 @@
       background:
         radial-gradient(circle at 12% 18%, rgba(61, 155, 110, 0.22), transparent 42%),
         linear-gradient(160deg, #101a16, #0b1210 60%, #121c18);
-      display: grid;
-      place-items: center;
       padding: 2rem;
     }
     main {
-      width: min(40rem, 100%);
+      width: min(44rem, 100%);
+      margin: 0 auto;
     }
     h1 {
       margin: 0 0 0.5rem;
@@ -41,6 +42,72 @@
       color: var(--accent);
       font-family: Consolas, "Cascadia Mono", monospace;
     }
+    .panel {
+      margin-top: 1.5rem;
+      padding: 1rem 1.1rem;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 0.75rem;
+    }
+    .panel h2 {
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .meta {
+      margin-bottom: 0.75rem;
+      font-size: 0.9rem;
+    }
+    .list {
+      display: grid;
+      gap: 0.55rem;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.7rem 0.8rem;
+      border: 1px solid var(--line);
+      border-radius: 0.55rem;
+      background: rgba(8, 14, 12, 0.35);
+    }
+    .row.active {
+      border-color: rgba(61, 155, 110, 0.7);
+      box-shadow: inset 0 0 0 1px rgba(61, 155, 110, 0.25);
+    }
+    .row strong {
+      display: block;
+      font-size: 0.98rem;
+    }
+    .row span {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    button {
+      appearance: none;
+      border: 1px solid rgba(61, 155, 110, 0.55);
+      background: rgba(61, 155, 110, 0.16);
+      color: var(--fg);
+      border-radius: 0.45rem;
+      padding: 0.4rem 0.75rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .status {
+      margin-top: 0.85rem;
+      min-height: 1.2rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .status.error { color: #ffb4a8; }
   </style>
 </head>
 <body>
@@ -48,8 +115,123 @@
     <h1>OpenPanel</h1>
     <p>Desktop control plane for local ops (services, sites, processes, and logs).</p>
     <p>Entry: <code>open-panel client</code> · package: <code>@wae/open-panel-gui</code>.</p>
-    <p>One client can manage many <code>open-panel server</code> endpoints.</p>
-    <p>This build is a static skeleton. Domain inventory arrives in later commits.</p>
+    <section class="panel" aria-labelledby="roster-title">
+      <h2 id="roster-title">Managed servers</h2>
+      <p class="meta" id="roster-meta">Loading roster…</p>
+      <div class="list" id="roster-list"></div>
+      <p class="status" id="roster-status"></p>
+    </section>
   </main>
+  <script>
+    (() => {
+      const meta = document.getElementById('roster-meta');
+      const list = document.getElementById('roster-list');
+      const status = document.getElementById('roster-status');
+      let pending = null;
+
+      function setStatus(text, isError = false) {
+        status.textContent = text || '';
+        status.classList.toggle('error', Boolean(isError));
+      }
+
+      function bridge() {
+        return globalThis.chrome && globalThis.chrome.webview;
+      }
+
+      function render(snapshot) {
+        const servers = Array.isArray(snapshot?.servers) ? snapshot.servers : [];
+        const activeId = snapshot?.activeId || '';
+        meta.textContent = snapshot?.path
+          ? `Config: ${snapshot.path} · active: ${activeId || '(none)'}`
+          : `Active: ${activeId || '(none)'}`;
+        list.replaceChildren();
+        if (!servers.length) {
+          const empty = document.createElement('p');
+          empty.textContent = 'No servers yet. Use `open-panel servers add` first.';
+          list.appendChild(empty);
+          return;
+        }
+        for (const server of servers) {
+          const row = document.createElement('div');
+          row.className = 'row' + (server.id === activeId ? ' active' : '');
+          const info = document.createElement('div');
+          const title = document.createElement('strong');
+          title.textContent = server.label ? `${server.label} (${server.id})` : server.id;
+          const url = document.createElement('span');
+          url.textContent = server.resolvedUrl || server.url || (
+            server.host ? `http://${server.host}:${server.port || 17890}/` : '(no url)'
+          );
+          info.append(title, url);
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = server.id === activeId ? 'Active' : 'Use';
+          button.disabled = server.id === activeId;
+          button.addEventListener('click', () => useServer(server.id));
+          row.append(info, button);
+          list.appendChild(row);
+        }
+      }
+
+      function post(message) {
+        const host = bridge();
+        if (!host || !host.postMessage) {
+          setStatus('Native bridge unavailable. Use `open-panel servers use --id …`.', true);
+          return false;
+        }
+        host.postMessage(JSON.stringify(message));
+        return true;
+      }
+
+      function useServer(id) {
+        pending = id;
+        setStatus(`Switching to ${id}…`);
+        post({ type: 'roster.use', id });
+      }
+
+      function refresh() {
+        if (!post({ type: 'roster.list' })) {
+          loadSnapshot();
+        }
+      }
+
+      async function loadSnapshot() {
+        try {
+          const response = await fetch('./roster.snapshot.json', { cache: 'no-store' });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          render(await response.json());
+          setStatus('Loaded roster snapshot.');
+        }
+        catch (error) {
+          meta.textContent = 'Roster unavailable';
+          setStatus(String(error?.message || error), true);
+        }
+      }
+
+      const host = bridge();
+      if (host && host.addEventListener) {
+        host.addEventListener('message', (event) => {
+          let data = event.data;
+          if (typeof data === 'string') {
+            try { data = JSON.parse(data); } catch { return; }
+          }
+          if (!data || typeof data !== 'object') return;
+          if (data.type === 'roster' || data.type === 'rosterResult') {
+            if (data.ok === false) {
+              setStatus(data.error?.message || data.error || 'roster failed', true);
+              return;
+            }
+            render(data.data || data.snapshot || data);
+            if (pending) {
+              setStatus(`Active server: ${pending}`);
+              pending = null;
+            }
+            else setStatus('Roster ready.');
+          }
+        });
+      }
+
+      refresh();
+    })();
+  </script>
 </body>
 </html>

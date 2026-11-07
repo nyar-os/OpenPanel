@@ -5,9 +5,10 @@
  * Entries:
  * - `open-panel client` desktop client (WAE WebView + `@wae/open-panel-gui`)
  * - `open-panel server` local WebUI listener (`@wae/open-panel-webui`)
+ * - `open-panel servers` client-side roster CRUD
  *
- * Both commands ship in the same `@wae/open-panel` package. There is no second
- * installer or parallel main binary.
+ * Both runtime entries ship in the same `@wae/open-panel` package. There is no
+ * second installer or parallel main binary.
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,10 +20,19 @@ import {
     auditQuery,
     capabilities,
     configureAudit,
+    getActiveServer,
+    loadServerRoster,
+    removeServer,
+    resolveServerUrl,
+    rosterPath,
+    rosterSnapshot,
     runClient,
     runServer,
+    upsertServer,
+    useServer,
     version,
     type CapabilitiesReport,
+    type ClientServerRoster,
 } from './index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -109,6 +119,21 @@ function formatCapabilities(report: CapabilitiesReport): string {
     return lines.join('\n');
 }
 
+function formatRoster(roster: ClientServerRoster): string {
+    const lines = [`roster: ${rosterPath()}`, `active: ${roster.activeId ?? '(none)'}`, `servers: ${roster.servers.length}`];
+    if (!roster.servers.length) {
+        lines.push('(empty — use `open-panel servers add`)');
+        return lines.join('\n');
+    }
+    for (const server of roster.servers) {
+        const mark = server.id === roster.activeId ? '*' : ' ';
+        const label = server.label ? ` "${server.label}"` : '';
+        const url = resolveServerUrl(server) ?? '(no url)';
+        lines.push(`${mark} ${server.id}${label}  ${url}`);
+    }
+    return lines.join('\n');
+}
+
 cli.command('capabilities', 'cli.cmd.capabilities')
     .actionCtx(async (options, _args, ctx) => {
         try {
@@ -157,17 +182,117 @@ cli.command('audit', 'cli.cmd.audit')
         }
     });
 
+const servers = cli.command('servers', 'cli.cmd.servers');
+
+servers.command('list', 'cli.cmd.servers-list')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const snapshot = rosterSnapshot();
+            emit(options, ctx, snapshot, formatRoster(loadServerRoster()));
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+servers.command('add', 'cli.cmd.servers-add')
+    .option('--id <id>', 'cli.opt.server-id')
+    .option('--label <text>', 'cli.opt.server-label')
+    .option('--url <url>', 'cli.opt.server-url')
+    .option('--host <host>', 'cli.opt.host')
+    .option('--port <n>', 'cli.opt.port')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const id = stringOption(options, 'id');
+            if (!id) throw new AppError({ code: 'invalid_argument', message: '`--id` is required' });
+            const roster = upsertServer({
+                id,
+                label: stringOption(options, 'label'),
+                url: stringOption(options, 'url'),
+                host: stringOption(options, 'host'),
+                port: integerOption(options, 'port'),
+            });
+            emit(options, ctx, rosterSnapshot(roster), formatRoster(roster));
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+servers.command('remove', 'cli.cmd.servers-remove')
+    .option('--id <id>', 'cli.opt.server-id')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const id = stringOption(options, 'id');
+            if (!id) throw new AppError({ code: 'invalid_argument', message: '`--id` is required' });
+            const roster = removeServer(id);
+            emit(options, ctx, rosterSnapshot(roster), formatRoster(roster));
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+servers.command('use', 'cli.cmd.servers-use')
+    .option('--id <id>', 'cli.opt.server-id')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const id = stringOption(options, 'id');
+            if (!id) throw new AppError({ code: 'invalid_argument', message: '`--id` is required' });
+            const roster = useServer(id);
+            const active = getActiveServer(roster);
+            emit(
+                options,
+                ctx,
+                rosterSnapshot(roster),
+                `active server: ${active?.id ?? id}${active ? ` → ${resolveServerUrl(active) ?? '(no url)'}` : ''}`,
+            );
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+servers.command('path', 'cli.cmd.servers-path')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const file = rosterPath();
+            emit(options, ctx, { path: file }, file);
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
 cli.command('client', 'cli.cmd.client')
     .option('--content-dir <path>', 'cli.opt.content-dir')
     .option('--title <text>', 'cli.opt.title')
+    .option('--server-id <id>', 'cli.opt.server-id')
     .actionCtx(async (options, _args, ctx) => {
         try {
             bootstrap(options);
             const backend = await runClient({
                 contentDir: stringOption(options, 'content-dir'),
                 title: stringOption(options, 'title'),
+                serverId: stringOption(options, 'server-id'),
             });
-            emit(options, ctx, { backend }, `desktop client closed (backend=${backend})`);
+            const active = getActiveServer();
+            emit(
+                options,
+                ctx,
+                { backend, active: active ? rosterSnapshot().active : undefined },
+                `desktop client closed (backend=${backend}${active ? `, active=${active.id}` : ''})`,
+            );
             return EXIT.OK;
         }
         catch (error) {

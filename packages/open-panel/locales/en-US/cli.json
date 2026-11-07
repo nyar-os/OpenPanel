@@ -1,12 +1,18 @@
 {
     "cli": {
-        "intro": "open-panel — local ops panel for services, sites, processes, and logs. One installable with `client` (desktop GUI) and `server` (WebUI).",
+        "intro": "open-panel — local ops panel for services, sites, processes, and logs. One installable with `client` (desktop GUI), `server` (WebUI), and `servers` (multi-server roster).",
         "cmd": {
             "capabilities": "Report domain capabilities and their availability",
             "version": "Print the native addon version",
             "audit": "Read audit records for the current actor",
             "client": "Open the desktop client GUI and pump host events until it closes",
-            "server": "Start the local WebUI listener for browser access"
+            "server": "Start the local WebUI listener for browser access",
+            "servers": "Manage the local multi-server roster used by the client",
+            "servers-list": "List managed servers and the active selection",
+            "servers-add": "Add or update a managed server entry",
+            "servers-remove": "Remove a managed server entry",
+            "servers-use": "Select the active managed server",
+            "servers-path": "Print the roster JSON path"
         },
         "opt": {
             "actor": "Audit actor id (user or agent name)",
@@ -15,12 +21,15 @@
             "json": "Emit machine-readable JSON on stdout",
             "content-dir": "Directory containing the staged panel UI build",
             "title": "Desktop window title",
-            "host": "WebUI listen host (default 127.0.0.1)",
-            "port": "WebUI listen port (default 17890)",
+            "host": "Host name or address",
+            "port": "TCP port (default 17890 for WebUI)",
             "kind": "Filter audit records by actor kind",
             "id": "Filter audit records by actor id",
             "capability": "Filter audit records by capability id",
-            "limit": "Maximum number of audit records"
+            "limit": "Maximum number of audit records",
+            "server-id": "Stable managed server id",
+            "server-label": "Human label for the managed server",
+            "server-url": "Full WebUI base URL (e.g. http://127.0.0.1:17890/)"
         }
     }
 }

@@ -6,16 +6,36 @@
  *   as a multi-server control plane (see `ClientServerRoster`)
  * - `runServer` hosts `@wae/open-panel-webui` as a single-machine WebUI endpoint
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { AppError, fromNativeError } from './errors.js';
-import { loadNative } from './native.js';
+import {
+    getActiveServer,
+    rosterSnapshot,
+    useServer,
+} from './managed-servers.js';
+import { loadNative, workspaceRoot } from './native.js';
 import { startServer, type ServerHandle, type ServerOptions } from './server.js';
 
 export {
     emptyServerRoster,
+    getActiveServer,
+    loadServerRoster,
+    removeServer,
+    resolveServerUrl,
+    rosterSnapshot,
+    saveServerRoster,
+    upsertServer,
+    useServer,
     type ClientServerRoster,
     type ManagedServerId,
     type ManagedServerRef,
+    type RosterSnapshot,
+    type UpsertServerInput,
 } from './managed-servers.js';
+export { ensureConfigDir, resolveConfigDir, rosterPath } from './paths.js';
 
 export type CapabilityState = 'unsupported_platform' | 'not_implemented' | 'dependency_blocked';
 
@@ -35,6 +55,8 @@ export interface CapabilitiesReport {
 export interface ClientOptions {
     contentDir?: string;
     title?: string;
+    /** Select this roster id before opening the desktop client. */
+    serverId?: string;
 }
 
 export interface AuditActor {
@@ -100,9 +122,40 @@ export function isGuiOpen(): boolean {
     return invoke(() => loadNative().isGuiOpen());
 }
 
+function writeRosterSnapshot(contentDir?: string): void {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+        contentDir,
+        process.env.OPEN_PANEL_GUI,
+        path.join(here, '..', 'dist', 'gui'),
+        path.join(workspaceRoot(), 'packages', 'open-panel-gui', 'dist', 'static'),
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    const snapshot = `${JSON.stringify(rosterSnapshot(), null, 2)}\n`;
+    for (const dir of candidates) {
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, 'roster.snapshot.json'), snapshot, 'utf8');
+            return;
+        }
+        catch {
+            // try next candidate
+        }
+    }
+}
+
 /** Open the desktop client and pump until the window closes. */
 export async function runClient(options: ClientOptions = {}): Promise<string> {
-    const opened = openGui(options);
+    if (options.serverId?.trim()) {
+        useServer(options.serverId);
+    }
+    const active = getActiveServer();
+    const title = options.title
+        ?? (active ? `OpenPanel — ${active.label ?? active.id}` : undefined);
+    writeRosterSnapshot(options.contentDir);
+    const opened = openGui({
+        contentDir: options.contentDir,
+        ...(title ? { title } : {}),
+    });
     while (pumpEvents()) {
         await new Promise((resolve) => setTimeout(resolve, 16));
     }

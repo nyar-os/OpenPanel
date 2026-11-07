@@ -1,12 +1,18 @@
 {
     "cli": {
-        "intro": "open-panel — 本机运维面板（服务 / 站点 / 进程 / 日志）。同一安装物：`client` 桌面客户端，`server` WebUI。",
+        "intro": "open-panel — 本机运维面板（服务 / 站点 / 进程 / 日志）。同一安装物：`client` 桌面客户端，`server` WebUI，`servers` 多机名册。",
         "cmd": {
             "capabilities": "报告领域能力及其可用性",
             "version": "打印原生插件版本",
             "audit": "读取当前 actor 的审计记录",
             "client": "打开桌面客户端 GUI，并泵送宿主事件直到窗口关闭",
-            "server": "启动本机 WebUI 监听，供浏览器访问"
+            "server": "启动本机 WebUI 监听，供浏览器访问",
+            "servers": "管理客户端使用的本地多 server 名册",
+            "servers-list": "列出已登记 server 与当前选中项",
+            "servers-add": "新增或更新一条 server 登记",
+            "servers-remove": "删除一条 server 登记",
+            "servers-use": "切换当前活动 server",
+            "servers-path": "打印名册 JSON 路径"
         },
         "opt": {
             "actor": "审计 actor id（用户或代理名）",
@@ -15,12 +21,15 @@
             "json": "在 stdout 输出机读 JSON",
             "content-dir": "已暂存面板 UI 构建目录",
             "title": "桌面窗口标题",
-            "host": "WebUI 监听主机（默认 127.0.0.1）",
-            "port": "WebUI 监听端口（默认 17890）",
+            "host": "主机名或地址",
+            "port": "TCP 端口（WebUI 默认 17890）",
             "kind": "按 actor 类型过滤审计记录",
             "id": "按 actor id 过滤审计记录",
             "capability": "按能力 id 过滤审计记录",
-            "limit": "审计记录条数上限"
+            "limit": "审计记录条数上限",
+            "server-id": "稳定的 managed server id",
+            "server-label": "managed server 的人类可读标签",
+            "server-url": "WebUI 完整 base URL（例如 http://127.0.0.1:17890/）"
         }
     }
 }

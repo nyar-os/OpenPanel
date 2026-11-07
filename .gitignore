@@ -22,6 +22,11 @@ dist/
 .env.placeholder.local
 .env*.local
 
+# Local remote-host secrets and ad-hoc packs (never commit)
+.open-panel.local/
+*.secrets.json
+*.tgz
+
 # Nifty local cache
 .cache/
 

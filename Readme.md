@@ -11,7 +11,18 @@
 
 二者是同一 CLI 的子命令分流，不要拆成两套安装包或两个主程序。两套前端彼此独立，不要再合并成单一 `*-ui` 包。一份 `client` 可同时管理多个本机或远端 `server`，不是 1:1 绑定单机。
 
-规划中：支持经 SSH 把同一套 `@wae/open-panel` 安装或升级到远端机器；公网优先走 npm。内网（无私有源 / 离线包等）需另定制品通道，当前版本尚未实现。
+客户端用本地 JSON 名册管理多台 `server`（不含密码等秘密）：
+
+```bash
+pnpm --filter @wae/open-panel exec node ./dist/cli.js servers add --id local --url http://127.0.0.1:17890/ --label "Local"
+pnpm --filter @wae/open-panel exec node ./dist/cli.js servers list
+pnpm --filter @wae/open-panel exec node ./dist/cli.js servers use --id local
+pnpm --filter @wae/open-panel exec node ./dist/cli.js client --server-id local
+```
+
+名册默认路径：Windows `%APPDATA%/open-panel/servers.json`，其它平台 `~/.config/open-panel/servers.json`（可用 `OPEN_PANEL_CONFIG_DIR` 覆盖）。
+
+规划中：远端安装/升级同一套 `@wae/open-panel`（公网优先 npm；包仍为 `0.0.0` 未发布时用本地 `npm pack` / tarball 验收）。
 
 ## 布局
 
