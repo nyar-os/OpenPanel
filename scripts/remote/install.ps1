@@ -1,9 +1,9 @@
-# OpenPanel remote install via jsDelivr. Runs on the remote host only.
+﻿# OpenPanel remote install via jsDelivr. Runs on the remote host only.
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ntfyTopic = "op-gh-raw-1107"
 # Tarball is stable on @dev; Win+R must pin install.ps1 itself to the push commit (CDN @dev lags).
-$cdnBase = "https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@dev/scripts/remote"
+$cdnBase = "https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@4e6d417967b290cdedf0d8ac875194a6c5b0228e/scripts/remote"
 $tarballName = "wae-open-panel-0.0.0.tgz"
 $pkgName = "@wae/open-panel"
 $serverPort = 8888
