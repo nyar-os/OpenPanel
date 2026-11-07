@@ -11,8 +11,22 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AppError } from './errors.js';
+import { AppError, fromNativeError } from './errors.js';
 import { workspaceRoot } from './native.js';
+import {
+    listNativeServices,
+    listWebSites,
+    nativeServiceStatus,
+    removeWebSite,
+    restartNativeService,
+    setWebSiteEnabled,
+    startNativeService,
+    startWebSite,
+    stopNativeService,
+    stopWebSite,
+    upsertWebSite,
+    type WebSiteInput,
+} from './panel-ops.js';
 
 export interface ServerOptions {
     host?: string;
@@ -106,6 +120,157 @@ function writeJson(response: http.ServerResponse, status: number, body: unknown)
     response.end(`${JSON.stringify(body, null, 2)}\n`);
 }
 
+function writeAppError(response: http.ServerResponse, error: unknown): void {
+    const appError = error instanceof AppError ? error : fromNativeError(error);
+    const status = appError.code === 'invalid_argument' || appError.code === 'not_found' ? 400 : 500;
+    writeJson(response, status, { ok: false, error: appError.toJSON() });
+}
+
+function readBody(request: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        request.on('data', (chunk) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            if (chunks.reduce((sum, item) => sum + item.length, 0) > 1_000_000) {
+                reject(new AppError({ code: 'invalid_argument', message: 'request body too large' }));
+                request.destroy();
+            }
+        });
+        request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        request.on('error', reject);
+    });
+}
+
+async function readJsonBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
+    const raw = (await readBody(request)).trim();
+    if (!raw) return {};
+    try {
+        const value = JSON.parse(raw) as unknown;
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            throw new AppError({ code: 'invalid_argument', message: 'JSON body must be an object' });
+        }
+        return value as Record<string, unknown>;
+    }
+    catch (error) {
+        if (error instanceof AppError) throw error;
+        throw new AppError({ code: 'invalid_argument', message: 'invalid JSON body' });
+    }
+}
+
+function normalizeApiPath(pathname: string): string {
+    if (pathname.startsWith('/api/v0/')) return pathname.slice('/api/v0'.length);
+    if (pathname.startsWith('/api/')) return pathname.slice('/api'.length);
+    return pathname;
+}
+
+async function handleApi(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    pathname: string,
+): Promise<boolean> {
+    if (!pathname.startsWith('/api/')) return false;
+    const apiPath = normalizeApiPath(pathname);
+    const method = request.method ?? 'GET';
+
+    try {
+        if (method === 'GET' && apiPath === '/host') {
+            writeJson(response, 200, { ok: true, data: hostStatus() });
+            return true;
+        }
+
+        if (method === 'GET' && apiPath === '/services') {
+            writeJson(response, 200, { ok: true, data: listNativeServices() });
+            return true;
+        }
+        const serviceMatch = /^\/services\/([^/]+)(?:\/(start|stop|restart))?$/.exec(apiPath);
+        if (serviceMatch) {
+            const name = decodeURIComponent(serviceMatch[1] ?? '');
+            const action = serviceMatch[2];
+            if (method === 'GET' && !action) {
+                writeJson(response, 200, { ok: true, data: nativeServiceStatus(name) });
+                return true;
+            }
+            if (method === 'POST' && action === 'start') {
+                writeJson(response, 200, { ok: true, data: startNativeService(name) });
+                return true;
+            }
+            if (method === 'POST' && action === 'stop') {
+                writeJson(response, 200, { ok: true, data: stopNativeService(name) });
+                return true;
+            }
+            if (method === 'POST' && action === 'restart') {
+                writeJson(response, 200, { ok: true, data: restartNativeService(name) });
+                return true;
+            }
+        }
+
+        if (method === 'GET' && apiPath === '/sites') {
+            writeJson(response, 200, { ok: true, data: listWebSites() });
+            return true;
+        }
+        if (method === 'POST' && apiPath === '/sites') {
+            const body = await readJsonBody(request);
+            const input = body as Partial<WebSiteInput>;
+            if (typeof input.id !== 'string' || typeof input.domain !== 'string' || typeof input.rootDir !== 'string') {
+                throw new AppError({
+                    code: 'invalid_argument',
+                    message: '`id`, `domain`, and `rootDir` are required',
+                });
+            }
+            const port = typeof input.port === 'number' ? input.port : Number(input.port);
+            if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                throw new AppError({ code: 'invalid_argument', message: '`port` must be an integer between 1 and 65535' });
+            }
+            const view = upsertWebSite({
+                id: input.id,
+                domain: input.domain,
+                rootDir: input.rootDir,
+                host: typeof input.host === 'string' ? input.host : undefined,
+                port,
+                enabled: typeof input.enabled === 'boolean' ? input.enabled : undefined,
+                kind: input.kind === 'static-host' ? 'static-host' : undefined,
+            });
+            writeJson(response, 200, { ok: true, data: view });
+            return true;
+        }
+        const siteMatch = /^\/sites\/([^/]+)(?:\/(enable|disable|start|stop))?$/.exec(apiPath);
+        if (siteMatch) {
+            const id = decodeURIComponent(siteMatch[1] ?? '');
+            const action = siteMatch[2];
+            if (method === 'DELETE' && !action) {
+                writeJson(response, 200, { ok: true, data: { removed: removeWebSite(id) } });
+                return true;
+            }
+            if (method === 'POST' && action === 'enable') {
+                writeJson(response, 200, { ok: true, data: setWebSiteEnabled(id, true) });
+                return true;
+            }
+            if (method === 'POST' && action === 'disable') {
+                writeJson(response, 200, { ok: true, data: setWebSiteEnabled(id, false) });
+                return true;
+            }
+            if (method === 'POST' && action === 'start') {
+                writeJson(response, 200, { ok: true, data: startWebSite(id) });
+                return true;
+            }
+            if (method === 'POST' && action === 'stop') {
+                writeJson(response, 200, { ok: true, data: stopWebSite(id) });
+                return true;
+            }
+        }
+
+        writeJson(response, 404, {
+            ok: false,
+            error: { code: 'not_found', message: `unknown api path \`${pathname}\`` },
+        });
+        return true;
+    }
+    catch (error) {
+        writeAppError(response, error);
+        return true;
+    }
+}
+
 /** Start the local WebUI listener and return a handle. */
 export async function startServer(options: ServerOptions = {}): Promise<ServerHandle> {
     const host = options.host?.trim() || '127.0.0.1';
@@ -117,12 +282,8 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 
     const server = http.createServer((request, response) => {
         const pathname = requestPath(request.url);
-        if (request.method === 'GET' && (pathname === '/api/host' || pathname === '/api/v0/host')) {
-            writeJson(response, 200, { ok: true, data: hostStatus() });
-            return;
-        }
         if (pathname.startsWith('/api/')) {
-            writeJson(response, 404, { ok: false, error: { code: 'not_found', message: `unknown api path \`${pathname}\`` } });
+            void handleApi(request, response, pathname);
             return;
         }
         const target = safeJoin(contentDir, request.url ?? '/');

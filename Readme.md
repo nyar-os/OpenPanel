@@ -34,7 +34,11 @@ pnpm --filter @wae/open-panel exec node ./dist/cli.js remote bootstrap-script --
 
 公网优先 npm。当前包版本仍是 `0.0.0` 占位时，`remote install` 会本地 `npm pack`。Windows 首连优先 RDP（需本机 FreeRDP：`OPEN_PANEL_FREERDP_PATH`）；若自动化 RDP 不可用，会写出交互式 bootstrap 脚本，绝不假装 SSH 已通。
 
-`open-panel server` 提供只读 `GET /api/host`（兼 `/api/v0/host`）供 client 拉取主机名/OS 状态。
+`open-panel server` HTTP API（`/api/v0/...`，兼 `/api/...`）：
+
+- `GET /host` — 主机名/OS 只读状态
+- `GET|POST /services...` — 本机 Native 服务（Windows Service Control Manager：列表、状态、启停、重启）
+- `GET|POST|DELETE /sites...` — Web 站点登记与启停（当前为 OpenPanel 托管的 `static-host` 静态监听，不是 IIS/Nginx 配置生成；Node/Python 应用运行时托管尚未做）
 
 ## 布局
 

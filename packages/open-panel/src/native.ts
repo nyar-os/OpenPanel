@@ -44,6 +44,17 @@ export interface NativeBindings {
         capability?: string;
         limit?: number;
     }): string;
+    listNativeServices(): unknown;
+    nativeServiceStatus(options: { name: string }): unknown;
+    startNativeService(options: { name: string }): unknown;
+    stopNativeService(options: { name: string }): unknown;
+    restartNativeService(options: { name: string }): unknown;
+    listWebSites(): unknown;
+    upsertWebSite(options: Record<string, string>): unknown;
+    removeWebSite(options: { id: string }): boolean;
+    setWebSiteEnabled(options: { id: string; enabled: string }): unknown;
+    startWebSite(options: { id: string }): unknown;
+    stopWebSite(options: { id: string }): unknown;
 }
 
 let cached: NativeBindings | null = null;

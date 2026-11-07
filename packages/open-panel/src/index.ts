@@ -53,6 +53,25 @@ export { packOpenPanel, passwordFromEnv } from './remote-pack.js';
 export { ensureFreeRdp, findFreeRdp } from './remote-freerdp.js';
 export { runRdpJob, type RdpJobResult } from './remote-rdp.js';
 export { hostStatus } from './server.js';
+export {
+    listNativeServices,
+    nativeServiceStatus,
+    startNativeService,
+    stopNativeService,
+    restartNativeService,
+    listWebSites,
+    upsertWebSite,
+    removeWebSite,
+    setWebSiteEnabled,
+    startWebSite,
+    stopWebSite,
+    type NativeServiceInfo,
+    type NativeServiceState,
+    type SiteRuntimeState,
+    type WebSiteInput,
+    type WebSiteKind,
+    type WebSiteView,
+} from './panel-ops.js';
 
 export type CapabilityState = 'unsupported_platform' | 'not_implemented' | 'dependency_blocked';
 

@@ -29,6 +29,12 @@ open-panel remote bootstrap-script
 
 Passwords only via `--password-env`. While `@wae/open-panel` remains unpublished / `0.0.0`, use `--pack-local`. Channels: `auto` (default), `rdp` (FreeRDP), `ssh`, `winrm`, `smb`. When FreeRDP is unavailable, install falls back to a bootstrap script for an interactive RDP session — it never pretends SSH worked.
 
-## Server status API
+## Server API
 
-`GET /api/host` and `GET /api/v0/host` return hostname / OS / Node identity for multi-server status pulls.
+Under `/api/v0` (also `/api`):
+
+- `GET /host` — hostname / OS / Node identity
+- `GET /services`, `GET /services/:name`, `POST /services/:name/{start,stop,restart}` — Windows SCM native services
+- `GET|POST /sites`, `DELETE /sites/:id`, `POST /sites/:id/{enable,disable,start,stop}` — web sites
+
+Web sites currently use OpenPanel-hosted `static-host` listeners (document root + bind host/port). IIS/Nginx production config generation and Node/Python app runtimes are out of scope for now.
