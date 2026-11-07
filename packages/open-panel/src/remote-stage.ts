@@ -173,9 +173,12 @@ export const RDPDR_PROOF_PUBLIC = String.raw`C:\Users\Public\op-panel-proof.txt`
 /** Local RDPDR ack filename read back by `open-panel-rdp` (primary proof). */
 export const RDPDR_ACK_FILE = 'op-ack.txt';
 
-/** Win+R / AlternateShell: run staged `p.cmd` from the RDPDR share. */
+/**
+ * Win+R / AlternateShell target. Keep this short: scancode inject drops characters
+ * on long `cmd.exe /c \\tsclient\...` strings. UNC `.cmd` runs directly from Run.
+ */
 export function buildRdpdrProofCmdShell(): string {
-    const shell = `cmd.exe /c \\\\tsclient\\${RDPDR_SHARE_NAME}\\p.cmd`;
+    const shell = `\\\\tsclient\\${RDPDR_SHARE_NAME}\\a.cmd`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',
@@ -187,22 +190,36 @@ export function buildRdpdrProofCmdShell(): string {
 
 /** Short AlternateShell that waits for RDPDR then detaches `\\tsclient\OP\i.ps1`. */
 export function buildRdpdrAlternateShellBootstrap(): string {
-    // Prefer the short `p.cmd` path (also used via Win+R) so proof + install share one entry.
     return buildRdpdrProofCmdShell();
 }
 
 function writeRdpdrProofCmd(dir: string, startInstall: boolean): string {
+    // Wait for RDPDR announce, write Public marker, retry copy until ack visible.
     const lines = [
         '@echo off',
+        'setlocal',
+        // RDPDR announce can lag Explorer; wait then retry the writeback.
+        'timeout /t 5 /nobreak >nul',
         `echo OP-PROOF>%PUBLIC%\\op-panel-proof.txt`,
-        `copy /y %PUBLIC%\\op-panel-proof.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE} >nul`,
+        'set /a n=0',
+        ':copy_ack',
+        `copy /y %PUBLIC%\\op-panel-proof.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE} >nul 2>&1`,
+        `if exist \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE} goto ack_ok`,
+        'set /a n+=1',
+        'if %n% GEQ 30 goto ack_fail',
+        'timeout /t 1 /nobreak >nul',
+        'goto copy_ack',
+        ':ack_fail',
+        'echo ACK_FAIL>%PUBLIC%\\op-panel-proof.txt',
+        ':ack_ok',
     ];
     if (startInstall) {
         lines.push(
             `start "" /b powershell.exe -NoP -EP Bypass -WindowStyle Hidden -File \\\\tsclient\\${RDPDR_SHARE_NAME}\\i.ps1`,
         );
     }
-    const cmdPath = path.join(dir, 'p.cmd');
+    // Single-letter name: fewer Win+R scancodes, less mid-type terminate.
+    const cmdPath = path.join(dir, 'a.cmd');
     fs.writeFileSync(cmdPath, `${lines.join('\r\n')}\r\n`, 'utf8');
     return cmdPath;
 }

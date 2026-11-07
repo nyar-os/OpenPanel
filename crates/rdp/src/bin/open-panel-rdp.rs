@@ -235,7 +235,8 @@ fn main() -> ExitCode {
             // Defaults ON: force logoff then Win+R. Lab AlternateShell alone was silent.
             // Opt out with `--no-force-fresh-logon` / `--no-inject-run`.
             let force_fresh_logon = !has_flag(&args, "--no-force-fresh-logon");
-            let inject_run_dialog = !has_flag(&args, "--no-inject-run");
+            // Opt-in only: default inject aborts lab ActiveStage and clears AlternateShell.
+            let inject_run_dialog = has_flag(&args, "--inject-run");
             let rdpdr_share_dir = arg_value(&args, "--rdpdr-dir").map(PathBuf::from);
             let rdpdr_ack_file = arg_value(&args, "--rdpdr-ack")
                 .map(str::to_owned)

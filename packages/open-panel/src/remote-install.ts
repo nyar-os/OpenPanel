@@ -184,11 +184,11 @@ async function installOneWindows(
                 skipStart: target.skipStart,
             });
             rdpdrDir = rdpdrStage.dir;
-            // Short Win+R / AlternateShell target: p.cmd writes Public proof + RDPDR ack.
+            // Short Win+R target: `\\tsclient\OP\a.cmd` (proof + optional install start).
             shell = buildRdpdrProofCmdShell();
             stageInfo = {
                 baseUrl: `\\\\tsclient\\OP`,
-                scriptUrl: `\\\\tsclient\\OP\\p.cmd`,
+                scriptUrl: `\\\\tsclient\\OP\\a.cmd`,
                 tarballUrl: `\\\\tsclient\\OP\\${rdpdrStage.tarballName}`,
             };
         }
@@ -202,7 +202,8 @@ async function installOneWindows(
             sessionTimeoutSecs,
             rdpdrDir,
             rdpdrAckFile: RDPDR_ACK_FILE,
-            // Proven smoke: force-fresh + Win+R. AlternateShell alone was silent on lab.
+            // Force-fresh via Win+R `shutdown /l`, then Win+R `\\tsclient\OP\a.cmd`.
+            // Soft AlternateShell logoff alone leaves reconnects ignoring Client Info.
             forceFreshLogon: true,
             injectRun: true,
         });

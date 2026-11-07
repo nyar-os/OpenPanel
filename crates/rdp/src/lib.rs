@@ -535,19 +535,19 @@ struct LogoffPassReport {
 /// Connect a full desktop and inject `shutdown /l` via Win+R, then wait for the
 /// session to end so the next connect starts a fresh logon.
 ///
-/// Do not put logoff in Client Info AlternateShell: on reconnect it is ignored,
-/// which previously produced a false "force logon" and left the payload swallowed.
-/// Incoming FastPath decode is skipped inside [`drive_active_stage`].
+/// Lab evidence (`proof2`/`proof3`): Client Info `AlternateShell=logoff` often
+/// ends in `SessionTimeout` without tearing the session down, so the payload
+/// reconnect reuses a desktop that ignores AlternateShell. Win+R `shutdown /l`
+/// reaches `ServerTerminate` (FastPath skipped). Soft-fail connect/active errors
+/// so the payload pass can still run.
 fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
     let mut logoff_opts = options.clone();
-    // Full desktop so Win+R has Explorer; payload is keyboard-only.
     logoff_opts.alternate_shell.clear();
     logoff_opts.work_dir.clear();
     logoff_opts.session_timeout = options.logoff_timeout.min(Duration::from_secs(45));
     logoff_opts.settle = Duration::from_secs(8);
     logoff_opts.inject_run_dialog = true;
     logoff_opts.force_fresh_logon = false;
-    // Keep the logoff pass lean: RDPDR during tear-down races with session reset.
     logoff_opts.rdpdr_share_dir = None;
     logoff_opts.rdpdr_ack_file = None;
 
@@ -555,8 +555,6 @@ fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
     let mut last_end = ExecEndReason::SessionTimeout;
     let mut last_elapsed = 0_u64;
 
-    // Up to two Win+R attempts: lab hosts sometimes accept the first keystrokes
-    // without tearing the session down (ReadIdle / no-terminate).
     for attempt in 1..=2_u32 {
         let connected = match connect_session(logoff_opts.clone()) {
             Ok(value) => value,
@@ -581,23 +579,14 @@ fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
             connected,
             session_timeout: options.logoff_timeout.min(Duration::from_secs(45)),
             settle: Duration::from_secs(8),
-            // `shutdown /l` is more reliable than bare `logoff` in the Run dialog.
             inject_command: Some("shutdown /l".into()),
             layer_label: "force-logoff-active-stage",
             hold_after_inject: false,
             rdpdr_ack_path: None,
         }) {
             Ok(value) => value,
-            Err(error) if is_transport_gone_msg(&error.to_string()) => {
-                return Ok(LogoffPassReport {
-                    end_reason: ExecEndReason::TransportClosed,
-                    elapsed_ms: 0,
-                    layers: vec!["force-logoff-active-stage", "force-logoff-transport-gone"],
-                });
-            }
             Err(error) => {
                 let message = error.to_string();
-                // Terminate mid-inject is the success signal for `shutdown /l`.
                 if message.contains("server terminate while draining")
                     || is_transport_gone_msg(&message)
                 {
@@ -835,6 +824,22 @@ fn hold_transport_without_graphics(
                             }
                             ActiveStageOutput::Terminate(_) => {
                                 breadcrumb("hold_transport:server_terminate");
+                                // Final ack poll: AlternateShell `cmd` often exits
+                                // (Terminate) right after writing the RDPDR file.
+                                if let Some(ack_path) = rdpdr_ack_path.as_ref() {
+                                    if !ack_seen {
+                                        if let Ok(body) = std::fs::read_to_string(ack_path) {
+                                            let trimmed = body.trim();
+                                            if !trimmed.is_empty() {
+                                                ack_seen = true;
+                                                layers.push("rdpdr-ack-seen");
+                                                ack_preview =
+                                                    Some(trimmed.chars().take(120).collect());
+                                                breadcrumb("hold_transport:rdpdr_ack_on_terminate");
+                                            }
+                                        }
+                                    }
+                                }
                                 break 'hold ExecEndReason::ServerTerminate;
                             }
                             _ => {}
@@ -855,6 +860,21 @@ fn hold_transport_without_graphics(
             }
         }
     };
+
+    // One more local read after the loop — Drop/forget ordering can flush late.
+    if !ack_seen {
+        if let Some(ack_path) = rdpdr_ack_path.as_ref() {
+            if let Ok(body) = std::fs::read_to_string(ack_path) {
+                let trimmed = body.trim();
+                if !trimmed.is_empty() {
+                    ack_seen = true;
+                    layers.push("rdpdr-ack-seen");
+                    ack_preview = Some(trimmed.chars().take(120).collect());
+                    breadcrumb("hold_transport:rdpdr_ack_after_loop");
+                }
+            }
+        }
+    }
 
     breadcrumb(&format!(
         "hold_transport:done end={end_reason:?} logon={logon_seen} ack={ack_seen} frames={frames_seen}"
@@ -972,10 +992,20 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
     };
     let mut frames_seen = 0_u64;
 
+    let waiting_ack = rdpdr_ack_path.is_some();
     let end_reason = 'active: {
         loop {
-            if started.elapsed() >= session_timeout {
+            // When an RDPDR ack is expected, do not cut the session on the original
+            // session_timeout during/after inject — typing + remote copy needs room.
+            if !waiting_ack && started.elapsed() >= session_timeout {
                 break 'active ExecEndReason::SessionTimeout;
+            }
+            if waiting_ack && inject_at.is_none() && Instant::now() >= hold_until {
+                break 'active if ack_seen {
+                    ExecEndReason::ReadIdle
+                } else {
+                    ExecEndReason::SessionTimeout
+                };
             }
             if let Some(ack_path) = rdpdr_ack_path.as_ref() {
                 if !ack_seen && ack_path.is_file() {
@@ -990,7 +1020,7 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                                 trimmed.len()
                             ));
                             // Keep RDPDR briefly so a detached installer can copy.
-                            hold_until = Instant::now() + Duration::from_secs(20);
+                            hold_until = Instant::now() + Duration::from_secs(25);
                         }
                     }
                 } else if ack_seen && Instant::now() >= hold_until {
@@ -1003,8 +1033,8 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     inject_at = None;
                     let command = inject_command.as_deref().unwrap_or("");
                     if logon_seen {
-                        // Brief pause for Explorer while still acking PDUs.
-                        let pause = Duration::from_secs(if hold_after_inject { 2 } else { 1 });
+                        // Longer settle so Explorer owns the desktop before Win+R.
+                        let pause = Duration::from_secs(if hold_after_inject { 5 } else { 2 });
                         let until = Instant::now() + pause;
                         while Instant::now() < until {
                             let _ = drain_incoming_pdus(
@@ -1035,8 +1065,6 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                             breadcrumb("drive_active_stage:inject_done");
                         }
                         Err(error) if is_transport_gone_msg(&error.to_string()) => {
-                            // Peer RST while typing: logoff expects it; payload reports
-                            // TransportClosed with injected=false so callers get JSON.
                             layers.push("inject-transport-gone");
                             if !hold_after_inject {
                                 injected = true;
@@ -1049,22 +1077,50 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                         Err(error)
                             if error.to_string().contains("server terminate while draining") =>
                         {
-                            // `shutdown /l` / `logoff` often terminates mid-keystroke drain.
                             injected = true;
                             layers.push("win-r-scancode-inject");
                             layers.push("inject-server-terminate");
                             breadcrumb("drive_active_stage:inject_server_terminate");
+                            // Payload inject can race with session tear-down; still
+                            // poll RDPDR ack before declaring failure.
+                            if let Some(ack_path) = rdpdr_ack_path.as_ref() {
+                                if !ack_seen {
+                                    for _ in 0..15_u32 {
+                                        if let Ok(body) = std::fs::read_to_string(ack_path) {
+                                            let trimmed = body.trim();
+                                            if !trimmed.is_empty() {
+                                                ack_seen = true;
+                                                layers.push("rdpdr-ack-seen");
+                                                ack_preview = Some(
+                                                    trimmed.chars().take(120).collect(),
+                                                );
+                                                breadcrumb(
+                                                    "drive_active_stage:rdpdr_ack_after_inject_terminate",
+                                                );
+                                                break;
+                                            }
+                                        }
+                                        std::thread::sleep(Duration::from_millis(300));
+                                    }
+                                }
+                            }
                             break 'active ExecEndReason::ServerTerminate;
                         }
                         Err(error) => return Err(error),
                     }
                     if hold_after_inject {
-                        // Keep the RDP session for the remaining wall budget so a
-                        // long install (Node zip + npm -g + server start) is not
-                        // killed by an early disconnect / read-idle.
-                        hold_until = started + session_timeout;
+                        // Absolute post-inject window for RDPDR ack (not leftover timeout).
+                        let post = if waiting_ack {
+                            Duration::from_secs(90)
+                        } else {
+                            session_timeout.saturating_sub(started.elapsed())
+                        };
+                        hold_until = Instant::now() + post.max(Duration::from_secs(30));
+                        breadcrumb(&format!(
+                            "drive_active_stage:post_inject_hold secs={}",
+                            hold_until.saturating_duration_since(Instant::now()).as_secs()
+                        ));
                     } else {
-                        // Expect logoff / short command to tear the session down soon.
                         hold_until = Instant::now() + Duration::from_secs(20);
                     }
                 }
@@ -1075,13 +1131,16 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                 Err(error)
                     if error.kind() == io::ErrorKind::WouldBlock || error.kind() == io::ErrorKind::TimedOut =>
                 {
-                    if started.elapsed() >= session_timeout {
-                        break 'active ExecEndReason::SessionTimeout;
-                    }
                     if inject_at.is_some() || Instant::now() < hold_until {
                         continue;
                     }
-                    break 'active ExecEndReason::ReadIdle;
+                    break 'active if ack_seen {
+                        ExecEndReason::ReadIdle
+                    } else if waiting_ack {
+                        ExecEndReason::SessionTimeout
+                    } else {
+                        ExecEndReason::ReadIdle
+                    };
                 }
                 Err(error) if is_transport_gone_io(&error) => {
                     breadcrumb("drive_active_stage:read_transport_gone");
@@ -1170,6 +1229,28 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     }
                     ActiveStageOutput::Terminate(_) => {
                         breadcrumb("drive_active_stage:server_terminate");
+                        // Final ack poll: remote `a.cmd` may finish the RDPDR
+                        // write in the same moment the server tears the session.
+                        if let Some(ack_path) = rdpdr_ack_path.as_ref() {
+                            if !ack_seen {
+                                for _ in 0..10_u32 {
+                                    if let Ok(body) = std::fs::read_to_string(ack_path) {
+                                        let trimmed = body.trim();
+                                        if !trimmed.is_empty() {
+                                            ack_seen = true;
+                                            layers.push("rdpdr-ack-seen");
+                                            ack_preview =
+                                                Some(trimmed.chars().take(120).collect());
+                                            breadcrumb(
+                                                "drive_active_stage:rdpdr_ack_on_terminate",
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    std::thread::sleep(Duration::from_millis(200));
+                                }
+                            }
+                        }
                         break 'active ExecEndReason::ServerTerminate;
                     }
                     other => {
@@ -1428,12 +1509,10 @@ fn write_paced_type_events(
 ) -> Result<()> {
     for (index, ch) in text.chars().enumerate() {
         write_input_events(active_stage, image, framed, response_frames, &build_char_events(ch))?;
-        // Pace keystrokes so the Run dialog can accept them without dropping.
-        std::thread::sleep(Duration::from_millis(35));
-        // Long payloads previously starved PDU reads and the server terminated the
-        // session mid-type (ServerTerminate with no remote side effect). Drain
-        // every few chars; FastPath is discarded, X.224 responses are acked.
-        if index % 4 == 3 {
+        // Slower pace: UNC paths (`\\tsclient\...`) previously lost scancodes.
+        std::thread::sleep(Duration::from_millis(80));
+        // Drain often so mid-type ServerTerminate / FastPath flood cannot pile up.
+        if index % 2 == 1 {
             drain_incoming_pdus(active_stage, image, framed, response_frames)?;
         }
     }
