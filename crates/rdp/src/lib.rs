@@ -22,14 +22,17 @@
 //! 1. Point `alternate_shell` at a short bootstrap that downloads an install
 //!    script from a URL the remote can reach (controller ephemeral HTTP, npm,
 //!    or an internal artifact URL), or
-//! 2. Pass a known remote filesystem path once RDPDR drive redirect lands.
+//! 2. Set [`RdpConnectOptions::rdpdr_share_dir`] so the client redirects a local
+//!    staging directory as `\\tsclient\OP` and the shell runs a script from it.
 //!
-//! OpenSSH on the target is never required.
+//! Prefer `force_fresh_logon` so Windows does not reconnect a disconnected
+//! desktop and ignore `AlternateShell`. OpenSSH on the target is never required.
 
 #![deny(missing_docs)]
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -151,6 +154,11 @@ pub struct RdpConnectOptions {
     pub force_fresh_logon: bool,
     /// Settle / hold budget for the preparatory logoff pass.
     pub logoff_timeout: Duration,
+    /// Optional local directory redirected through RDPDR as `\\tsclient\OP`.
+    ///
+    /// Used to deliver install scripts / tarballs when the remote cannot reach
+    /// the controller over HTTP. Requires co-advertising RDPSND (MS-RDPEFS).
+    pub rdpdr_share_dir: Option<PathBuf>,
 }
 
 impl Default for RdpConnectOptions {
@@ -172,6 +180,7 @@ impl Default for RdpConnectOptions {
             settle: Duration::from_secs(8),
             force_fresh_logon: true,
             logoff_timeout: Duration::from_secs(45),
+            rdpdr_share_dir: None,
         }
     }
 }
@@ -398,6 +407,7 @@ fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
     logoff_opts.settle = Duration::from_secs(5);
     logoff_opts.inject_run_dialog = true;
     logoff_opts.force_fresh_logon = false;
+    logoff_opts.rdpdr_share_dir = None;
 
     let connected = connect_session(logoff_opts)?;
     let active = drive_active_stage(DriveActiveOpts {
@@ -522,8 +532,10 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     injected = true;
                     layers.push("win-r-scancode-inject");
                     if hold_after_inject {
-                        hold_until =
-                            Instant::now() + (session_timeout / 2).max(Duration::from_secs(20));
+                        // Keep the RDP session for the remaining wall budget so a
+                        // long install (Node zip + npm -g + server start) is not
+                        // killed by an early disconnect / read-idle.
+                        hold_until = started + session_timeout;
                     } else {
                         // Expect logoff / short command to tear the session down soon.
                         hold_until = Instant::now() + Duration::from_secs(20);
@@ -886,6 +898,10 @@ fn truncate_for_report(value: &str) -> String {
     format!("{}…", &value[..MAX])
 }
 
+/// RDPDR drive name announced to the server (`\\tsclient\OP` on Windows).
+pub const RDPDR_SHARE_NAME: &str = "OP";
+const RDPDR_DEVICE_ID: u32 = 1;
+
 fn connect_session(options: RdpConnectOptions) -> Result<ConnectedSession> {
     let host = options.host.trim().to_owned();
     let mut layers = Vec::new();
@@ -904,6 +920,10 @@ fn connect_session(options: RdpConnectOptions) -> Result<ConnectedSession> {
     let config = build_config(&options);
     let mut framed = Framed::new(tcp);
     let mut connector = ClientConnector::new(config, local_addr);
+    if let Some(share_dir) = options.rdpdr_share_dir.as_ref() {
+        attach_rdpdr_channels(&mut connector, share_dir)?;
+        layers.push("rdpdr-drive-redirect");
+    }
 
     let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector)
         .map_err(|error| Error::Connector(error.to_string()))?;
@@ -977,6 +997,68 @@ fn report_from_result(
             "External RDP CLIs (mstsc / freerdp / wfreerdp) are not part of this path.".into(),
         ],
     }
+}
+
+fn normalize_rdpdr_root(path: &std::path::Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| Error::InvalidArgument(format!("rdpdr share dir cwd: {error}")))?
+            .join(path)
+    };
+    let lossy = absolute.to_string_lossy();
+    let stripped = lossy
+        .strip_prefix(r"\\?\")
+        .or_else(|| lossy.strip_prefix(r"//?/"))
+        .unwrap_or(lossy.as_ref());
+    let normalized = PathBuf::from(stripped);
+    // Require `X:\...` form expected by the native RDPDR backend.
+    let text = normalized.to_string_lossy();
+    let bytes = text.as_bytes();
+    let looks_like_drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/');
+    if !looks_like_drive {
+        return Err(Error::InvalidArgument(format!(
+            "rdpdr share dir must be a drive-letter path (got {})",
+            normalized.display()
+        )));
+    }
+    Ok(normalized)
+}
+
+fn attach_rdpdr_channels(
+    connector: &mut ClientConnector,
+    share_dir: &std::path::Path,
+) -> Result<()> {
+    use ironrdp_rdpdr::Rdpdr;
+    use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
+    use ironrdp_rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
+
+    if !share_dir.is_dir() {
+        return Err(Error::InvalidArgument(format!(
+            "rdpdr share dir is not a directory: {}",
+            share_dir.display()
+        )));
+    }
+    // Prefer a plain drive-letter path. Windows `canonicalize` yields `\\?\`
+    // verbatim paths that ironrdp-rdpdr-native rejects as InvalidRootPath.
+    let share_dir = normalize_rdpdr_root(share_dir)?;
+
+    // Writable so the remote can leave proof / result files on the share.
+    let drive = RedirectedDrive::new(RDPDR_DEVICE_ID, RDPDR_SHARE_NAME, share_dir, false)
+        .map_err(|error| Error::InvalidArgument(format!("rdpdr drive: {error:?}")))?;
+    let factory = WindowsRdpdrBackendFactory::new(drive);
+    let backend = factory.build();
+    let initial = factory.initial_drives();
+    // MS-RDPEFS requires RDPSND to be co-advertised or the server ignores RDPDR.
+    let rdpsnd = Rdpsnd::new(Box::new(NoopRdpsndBackend));
+    let rdpdr = Rdpdr::new(Box::new(backend), "open-panel-rdp".into()).with_drives(Some(initial));
+    connector.attach_static_channel(rdpsnd);
+    connector.attach_static_channel(rdpdr);
+    Ok(())
 }
 
 fn build_config(options: &RdpConnectOptions) -> ironrdp_connector::Config {

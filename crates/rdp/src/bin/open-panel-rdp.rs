@@ -3,6 +3,7 @@
 //! Password must come from the environment (`--password-env`), never argv.
 
 use std::env;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ use open_panel_rdp::{RdpAuth, RdpConnectOptions, handshake, probe_tcp, run_alter
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> --shell <cmd> [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--no-force-fresh-logon] [--no-inject-run]"
+        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> --shell <cmd> [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--no-force-fresh-logon] [--no-inject-run]"
     );
     std::process::exit(2);
 }
@@ -137,6 +138,7 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|_| usage());
             let force_fresh_logon = !has_flag(&args, "--no-force-fresh-logon");
             let inject_run_dialog = !has_flag(&args, "--no-inject-run");
+            let rdpdr_share_dir = arg_value(&args, "--rdpdr-dir").map(PathBuf::from);
 
             let report = run_alternate_shell(RdpConnectOptions {
                 host: host.clone(),
@@ -155,6 +157,7 @@ fn main() -> ExitCode {
                 settle: Duration::from_secs(8),
                 force_fresh_logon,
                 logoff_timeout: Duration::from_secs(45),
+                rdpdr_share_dir,
             });
 
             match report {
