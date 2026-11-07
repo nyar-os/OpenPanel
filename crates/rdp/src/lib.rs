@@ -436,10 +436,14 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
         desktop_for_inject = true;
     }
     breadcrumb(&format!(
-        "run_alternate_shell:payload_connect_begin inject={inject_run_dialog} desktop={desktop_for_inject}"
+        "run_alternate_shell:payload_connect_begin inject={inject_run_dialog} desktop={desktop_for_inject} ack={}",
+        rdpdr_ack_path.is_some()
     ));
     let connected = connect_session_with_retry(connect_opts, forced_fresh_logon)?;
     breadcrumb("run_alternate_shell:payload_connect_done");
+    // RDPDR writeback needs a live ActiveStage (channel replies). A graphics-skip
+    // hold after force-logoff kept the TCP session up for the full timeout with
+    // no `op-ack.txt` and no ServerTerminate — AlternateShell alone was silent.
     let active = if inject_run_dialog {
         drive_active_stage(DriveActiveOpts {
             connected,
@@ -447,6 +451,16 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
             settle,
             inject_command: Some(shell.clone()),
             layer_label: "alternate-shell-active-stage",
+            hold_after_inject: true,
+            rdpdr_ack_path: rdpdr_ack_path.clone(),
+        })?
+    } else if rdpdr_ack_path.is_some() {
+        drive_active_stage(DriveActiveOpts {
+            connected,
+            session_timeout,
+            settle: Duration::from_secs(2),
+            inject_command: None,
+            layer_label: "alternate-shell-rdpdr-active",
             hold_after_inject: true,
             rdpdr_ack_path: rdpdr_ack_path.clone(),
         })?
@@ -1513,25 +1527,31 @@ fn us_scancode(ch: char) -> Option<(u8, bool)> {
 }
 
 fn build_char_events(ch: char) -> Vec<FastPathInputEvent> {
-    if let Some((code, shift)) = us_scancode(ch) {
-        let mut events = Vec::with_capacity(4);
-        if shift {
-            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2A));
+    // Win+R on lab hosts drops US scancodes for path punctuation (`\`, `%`, `&`,
+    // `:`, `>`). Prefer Unicode keyboard events for non-alphanumerics so UNC /
+    // Public paths survive inject. Letters/digits still use set-1 scancodes.
+    let use_unicode = !ch.is_ascii_alphanumeric() && ch != ' ' && ch != '.' && ch != '-';
+    if !use_unicode {
+        if let Some((code, shift)) = us_scancode(ch) {
+            let mut events = Vec::with_capacity(4);
+            if shift {
+                events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2A));
+            }
+            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), code));
+            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, code));
+            if shift {
+                events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2A));
+            }
+            return events;
         }
-        events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), code));
-        events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, code));
-        if shift {
-            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2A));
-        }
-        return events;
     }
-    // Fallback for characters outside the US scancode map.
     let mut buf = [0_u16; 2];
-    ch.encode_utf16(&mut buf)
-        .iter()
-        .copied()
-        .map(|unit| FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit))
-        .collect()
+    let mut events = Vec::with_capacity(4);
+    for unit in ch.encode_utf16(&mut buf).iter().copied() {
+        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit));
+        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, unit));
+    }
+    events
 }
 
 fn write_paced_type_events(
