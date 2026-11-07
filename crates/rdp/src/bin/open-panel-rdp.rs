@@ -146,7 +146,7 @@ fn main() -> ExitCode {
                 timeout: Duration::from_secs(20),
                 session_timeout: Duration::from_secs(session_timeout_secs),
                 inject_run_dialog: true,
-                settle: Duration::from_secs(4),
+                settle: Duration::from_secs(8),
             });
 
             match report {
