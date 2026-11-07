@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ntfyTopic = "op-inst-cli1"
 # Tarball pin (short rev); Win+R must also pin install.ps1 itself (CDN @dev lags).
-$cdnBase = "https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@949b957/scripts/remote"
+$cdnBase = "https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@080e723/scripts/remote"
 $tarballName = "wae-open-panel-0.0.0.tgz"
 # packages/open-panel/package.json: name + bin.open-panel -> ./dist/cli.js
 $pkgName = "@wae/open-panel"
