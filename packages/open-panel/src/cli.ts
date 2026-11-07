@@ -3,12 +3,14 @@
  * Single installable CLI for OpenPanel.
  *
  * Entries:
+ * - `open-panel install` write local WebUI credentials (also via postinstall / npx)
  * - `open-panel client` desktop client (WAE WebView + `@wae/open-panel-gui`)
  * - `open-panel server` local WebUI listener (`@wae/open-panel-webui`)
  * - `open-panel servers` client-side roster CRUD
  *
- * Both runtime entries ship in the same `@wae/open-panel` package. There is no
- * second installer or parallel main binary.
+ * Runtime entries ship in the same `@wae/open-panel` package. There is no
+ * second installer or parallel main binary. `npx @wae/open-panel install` and
+ * package `postinstall` call the same `runInstall` as this CLI command.
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +24,7 @@ import {
     configureAudit,
     getActiveServer,
     loadServerRoster,
+    formatInstallReport,
     installRemote,
     probeRemoteHost,
     removeServer,
@@ -29,6 +32,7 @@ import {
     rosterPath,
     rosterSnapshot,
     runClient,
+    runInstall,
     runServer,
     upsertServer,
     useServer,
@@ -360,6 +364,37 @@ remote.command('install', 'cli.cmd.remote-install')
     });
 
 
+cli.command('install', 'cli.cmd.install')
+    .option('--force', 'cli.opt.install-force')
+    .option('--port <n>', 'cli.opt.port')
+    .option('--advertise-host <host>', 'cli.opt.advertise-host')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const report = runInstall({
+                force: flag(options, 'force'),
+                port: integerOption(options, 'port'),
+                advertiseHost: stringOption(options, 'advertise-host'),
+            });
+            const publicData = {
+                ok: report.ok,
+                created: report.created,
+                reused: report.reused,
+                path: report.path,
+                configDir: report.configDir,
+                username: report.username,
+                port: report.port,
+                loginUrl: report.loginUrl,
+                note: report.note,
+                ...(report.created && report.password ? { password: report.password } : {}),
+            };
+            emit(options, ctx, publicData, formatInstallReport(report));
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
 cli.command('client', 'cli.cmd.client')
     .option('--content-dir <path>', 'cli.opt.content-dir')
     .option('--title <text>', 'cli.opt.title')
@@ -403,8 +438,20 @@ cli.command('server', 'cli.cmd.server')
             emit(
                 options,
                 ctx,
-                { host: handle.host, port: handle.port, url: handle.url, contentDir: handle.contentDir },
-                `OpenPanel WebUI listening on ${handle.url}\ncontent: ${handle.contentDir}\nPress Ctrl+C to stop.`,
+                {
+                    host: handle.host,
+                    port: handle.port,
+                    url: handle.url,
+                    loginUrl: handle.loginUrl,
+                    username: handle.username,
+                    contentDir: handle.contentDir,
+                },
+                [
+                    `OpenPanel WebUI listening on ${handle.loginUrl}`,
+                    `user: ${handle.username}`,
+                    `content: ${handle.contentDir}`,
+                    'Press Ctrl+C to stop.',
+                ].join('\n'),
             );
             await new Promise<void>((resolve) => {
                 const stop = () => {

@@ -37,6 +37,30 @@ export {
 } from './managed-servers.js';
 export { ensureConfigDir, resolveConfigDir, rosterPath } from './paths.js';
 export {
+    DEFAULT_WEBUI_PORT,
+    WEBUI_PASSWORD_LENGTH,
+    WEBUI_PASSWORD_MIN_LENGTH,
+    WEBUI_USERNAME,
+    webuiLoginUrl,
+} from './defaults.js';
+export {
+    assertPasswordStrength,
+    credentialsExist,
+    credentialsPath,
+    generateStrongPassword,
+    installCredentials,
+    loadCredentials,
+    passwordEntropyBits,
+    type InstallCredentialsResult,
+    type WebuiCredentials,
+} from './credentials.js';
+export {
+    formatInstallReport,
+    runInstall,
+    type InstallReport,
+    type RunInstallOptions,
+} from './install.js';
+export {
     probeRemoteHost,
     type RemoteChannel,
     type RemotePortProbe,
@@ -64,7 +88,7 @@ export {
     startPackStageServer,
     waitForTcp,
 } from './remote-stage.js';
-export { hostStatus } from './server.js';
+export { hostStatus, resolveListenPort } from './server.js';
 export {
     listNativeServices,
     nativeServiceStatus,

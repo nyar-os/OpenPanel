@@ -9,6 +9,7 @@
  */
 import fs from 'node:fs';
 
+import { DEFAULT_WEBUI_PORT } from './defaults.js';
 import { AppError } from './errors.js';
 import { ensureConfigDir, rosterPath } from './paths.js';
 
@@ -25,7 +26,7 @@ export interface ManagedServerRef {
     id: ManagedServerId;
     /** Human label shown in the client UI. */
     label?: string;
-    /** Full base URL of the WebUI, e.g. `http://127.0.0.1:17890/`. */
+    /** Full base URL of the WebUI, e.g. `http://127.0.0.1:8888/`. */
     url?: string;
     /** Hostname or address when `url` is not yet composed. */
     host?: string;
@@ -72,7 +73,7 @@ export function resolveServerUrl(ref: Pick<ManagedServerRef, 'url' | 'host' | 'p
     if (ref.url?.trim()) return normalizeBaseUrl(ref.url);
     const host = ref.host?.trim();
     if (!host) return undefined;
-    const port = ref.port ?? 17890;
+    const port = ref.port ?? DEFAULT_WEBUI_PORT;
     return `http://${host}:${port}/`;
 }
 
