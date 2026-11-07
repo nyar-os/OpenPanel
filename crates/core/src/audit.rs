@@ -14,8 +14,8 @@ pub mod capability_ids {
     pub const GUI_CLOSE: &str = "gui-close";
     /// Desktop GUI liveness probe.
     pub const GUI_STATUS: &str = "gui-status";
-    /// Host the local WebUI listener (`open-panel serve`).
-    pub const SERVE: &str = "serve";
+    /// Host the local WebUI listener (`open-panel server`).
+    pub const SERVER: &str = "server";
     /// Local service inventory.
     pub const SERVICES: &str = "services";
     /// Local site inventory.

@@ -1,0 +1,12 @@
+{
+    "name": "@wae/open-panel-webui",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "OpenPanel server WebUI surface for `open-panel server` (static skeleton, VMZ-ready)",
+    "scripts": {
+        "build": "node --experimental-strip-types ./scripts/build-static.ts && node --experimental-strip-types ./scripts/stage.ts",
+        "stage": "node --experimental-strip-types ./scripts/stage.ts"
+    },
+    "license": "Apache-2.0"
+}

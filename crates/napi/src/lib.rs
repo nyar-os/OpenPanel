@@ -1,7 +1,7 @@
 //! Platform-neutral N-API surface for OpenPanel.
 //!
 //! Desktop GUI (`openGui` / `pumpEvents` / `closeGui`) and diagnostics stay here.
-//! The WebUI listener for `open-panel serve` lives in the TypeScript meta package
+//! The WebUI listener for `open-panel server` lives in the TypeScript meta package
 //! so one installable owns both the client and the server entry.
 
 #![deny(missing_docs)]
@@ -123,7 +123,7 @@ fn resolve_gui_dir(requested: Option<String>) -> Result<String> {
     }
     let candidates = [
         PathBuf::from("packages/open-panel/dist/gui"),
-        PathBuf::from("packages/open-panel-ui/dist/static"),
+        PathBuf::from("packages/open-panel-gui/dist/static"),
         PathBuf::from("dist/gui"),
         PathBuf::from("gui"),
     ];
@@ -132,7 +132,7 @@ fn resolve_gui_dir(requested: Option<String>) -> Result<String> {
             return Ok(candidate.display().to_string());
         }
     }
-    Err(Error::new("gui content dir not found: pass `contentDir`, set `OPEN_PANEL_GUI`, or build the UI package first"))
+    Err(Error::new("gui content dir not found: pass `contentDir`, set `OPEN_PANEL_GUI`, or run `pnpm run build:gui` first"))
 }
 
 fn ensure_gui_log() -> Option<PathBuf> {

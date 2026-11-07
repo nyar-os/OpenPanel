@@ -1,5 +1,5 @@
 /**
- * Stage the static panel shell into `dist/static`.
+ * Stage the desktop GUI shell into `dist/static`.
  *
  * The layout matches Open* UI packages so a later VMZ build can replace this
  * step without renaming packages or staging paths.
@@ -30,4 +30,4 @@ if (!fs.existsSync(path.join(from, 'index.html'))) {
 
 fs.rmSync(to, { recursive: true, force: true });
 copyDir(from, to);
-console.log(`built static UI -> ${to}`);
+console.log(`built desktop GUI -> ${to}`);

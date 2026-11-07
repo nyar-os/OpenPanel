@@ -1,9 +1,9 @@
 /**
- * Local WebUI listener for `open-panel serve`.
+ * Local WebUI listener for `open-panel server`.
  *
- * This is the server entry of the same installable. It hosts the staged panel
+ * This is the server entry of the same installable. It hosts the staged WebUI
  * assets over HTTP so a browser can open the ops surface. Desktop clients keep
- * using `open-panel gui` through the WebView host.
+ * using `open-panel client` through the WebView host and `@wae/open-panel-gui`.
  */
 import fs from 'node:fs';
 import http from 'node:http';
@@ -13,13 +13,13 @@ import { fileURLToPath } from 'node:url';
 import { AppError } from './errors.js';
 import { workspaceRoot } from './native.js';
 
-export interface ServeOptions {
+export interface ServerOptions {
     host?: string;
     port?: number;
     contentDir?: string;
 }
 
-export interface ServeHandle {
+export interface ServerHandle {
     host: string;
     port: number;
     url: string;
@@ -42,12 +42,12 @@ const MIME: Record<string, string> = {
 function contentCandidates(explicit?: string): string[] {
     const roots: string[] = [];
     if (explicit && explicit.trim()) roots.push(path.resolve(explicit));
-    if (process.env.OPEN_PANEL_GUI?.trim()) roots.push(path.resolve(process.env.OPEN_PANEL_GUI));
+    if (process.env.OPEN_PANEL_WEBUI?.trim()) roots.push(path.resolve(process.env.OPEN_PANEL_WEBUI));
     const here = path.dirname(fileURLToPath(import.meta.url));
     roots.push(
-        path.resolve(here, '..', 'dist', 'gui'),
-        path.resolve(workspaceRoot(), 'packages', 'open-panel', 'dist', 'gui'),
-        path.resolve(workspaceRoot(), 'packages', 'open-panel-ui', 'dist', 'static'),
+        path.resolve(here, '..', 'dist', 'webui'),
+        path.resolve(workspaceRoot(), 'packages', 'open-panel', 'dist', 'webui'),
+        path.resolve(workspaceRoot(), 'packages', 'open-panel-webui', 'dist', 'static'),
     );
     return roots;
 }
@@ -58,10 +58,10 @@ export function resolveContentDir(explicit?: string): string {
     }
     throw new AppError({
         code: 'content_dir_missing',
-        capability: 'serve',
+        capability: 'server',
         message:
-            'WebUI content directory not found. Run `pnpm run build:ui` first, ' +
-            'pass `--content-dir`, or set `OPEN_PANEL_GUI`.',
+            'WebUI content directory not found. Run `pnpm run build:webui` first, ' +
+            'pass `--content-dir`, or set `OPEN_PANEL_WEBUI`.',
     });
 }
 
@@ -79,7 +79,7 @@ function safeJoin(root: string, urlPath: string): string | null {
 }
 
 /** Start the local WebUI listener and return a handle. */
-export async function startServe(options: ServeOptions = {}): Promise<ServeHandle> {
+export async function startServer(options: ServerOptions = {}): Promise<ServerHandle> {
     const host = options.host?.trim() || '127.0.0.1';
     const port = options.port ?? 17890;
     if (!Number.isInteger(port) || port < 1 || port > 65535) {

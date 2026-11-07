@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OpenPanel</title>
+  <title>OpenPanel WebUI</title>
   <style>
     :root {
       --bg: #0f1714;
@@ -18,7 +18,7 @@
       font-family: "Segoe UI", "PingFang SC", sans-serif;
       color: var(--fg);
       background:
-        radial-gradient(circle at 12% 18%, rgba(61, 155, 110, 0.22), transparent 42%),
+        radial-gradient(circle at 88% 12%, rgba(61, 155, 110, 0.18), transparent 40%),
         linear-gradient(160deg, #101a16, #0b1210 60%, #121c18);
       display: grid;
       place-items: center;
@@ -44,10 +44,10 @@
   </style>
 </head>
 <body>
-  <main data-open-panel="root">
+  <main data-open-panel="webui-root">
     <h1>OpenPanel</h1>
-    <p>Local ops panel for services, sites, processes, and logs.</p>
-    <p>Same installable: <code>open-panel gui</code> (desktop client) and <code>open-panel serve</code> (WebUI).</p>
+    <p>Server WebUI for local ops (services, sites, processes, and logs).</p>
+    <p>Entry: <code>open-panel server</code> · package: <code>@wae/open-panel-webui</code>.</p>
     <p>This build is a static skeleton. Domain inventory arrives in later commits.</p>
   </main>
 </body>

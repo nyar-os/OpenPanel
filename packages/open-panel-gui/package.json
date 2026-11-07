@@ -1,0 +1,12 @@
+{
+    "name": "@wae/open-panel-gui",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "OpenPanel desktop client GUI surface for `open-panel client` (static skeleton, VMZ-ready)",
+    "scripts": {
+        "build": "node --experimental-strip-types ./scripts/build-static.ts && node --experimental-strip-types ./scripts/stage.ts",
+        "stage": "node --experimental-strip-types ./scripts/stage.ts"
+    },
+    "license": "Apache-2.0"
+}

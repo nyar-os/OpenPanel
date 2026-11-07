@@ -95,15 +95,16 @@ pub struct Capabilities {
 
 /// Build the domain capability report for the current host.
 ///
-/// `gui` is the desktop client host. `serve` is the in-process WebUI listener
-/// owned by the TypeScript meta package (same installable). Service / site /
-/// process panel domains stay `not_implemented` in this skeleton.
+/// Desktop client host capabilities stay under `gui-*`. `server` is the
+/// in-process WebUI listener owned by the TypeScript meta package (same
+/// installable). Service / site / process panel domains stay `not_implemented`
+/// in this skeleton.
 pub fn capabilities() -> Capabilities {
     let mut items = vec![
         Capability::available(capability_ids::GUI_OPEN),
         Capability::available(capability_ids::GUI_PUMP),
         Capability::available(capability_ids::GUI_CLOSE),
-        Capability::available(capability_ids::SERVE),
+        Capability::available(capability_ids::SERVER),
         Capability::unavailable(
             capability_ids::SERVICES,
             CapabilityState::NotImplemented,
@@ -136,7 +137,7 @@ pub fn capabilities() -> Capabilities {
         arch: platform_arch().to_string(),
         items,
         notes: vec![
-            "one installable `@wae/open-panel`: `gui` opens the desktop client and `serve` hosts the WebUI".to_string(),
+            "one installable `@wae/open-panel`: `client` opens `@wae/open-panel-gui` and `server` hosts `@wae/open-panel-webui`".to_string(),
             "OpenPanel is a local ops panel (services / sites / processes / logs), not an API gateway".to_string(),
         ],
     }
@@ -147,10 +148,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn report_lists_gui_and_serve() {
+    fn report_lists_gui_and_server() {
         let report = capabilities();
         let ids: Vec<_> = report.items.iter().map(|item| item.id.as_str()).collect();
         assert!(ids.contains(&capability_ids::GUI_OPEN));
-        assert!(ids.contains(&capability_ids::SERVE));
+        assert!(ids.contains(&capability_ids::SERVER));
     }
 }

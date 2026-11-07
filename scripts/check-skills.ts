@@ -108,7 +108,7 @@ if (!fs.existsSync(skillsRoot)) {
 }
 
 const commands = commandTree();
-for (const required of ['capabilities', 'version', 'gui', 'serve', 'audit']) {
+for (const required of ['capabilities', 'version', 'client', 'server', 'audit']) {
     if (!commands.has(required)) fail(`CLI is missing required command \`${required}\``);
 }
 

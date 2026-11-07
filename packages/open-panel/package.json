@@ -1,7 +1,7 @@
 {
     "name": "@wae/open-panel",
     "version": "0.0.0",
-    "description": "OpenPanel meta package: local ops panel CLI with desktop GUI and WebUI serve",
+    "description": "OpenPanel meta package: local ops panel CLI with desktop client and WebUI server",
     "license": "Apache-2.0",
     "type": "module",
     "engines": {

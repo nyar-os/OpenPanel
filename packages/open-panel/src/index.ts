@@ -2,12 +2,12 @@
  * Typed library surface over the N-API boundary and the WebUI listener.
  *
  * One installable owns both entries:
- * - `runGui` opens the desktop client (WAE WebView)
- * - `runServe` hosts the same panel assets as a local WebUI
+ * - `runClient` opens the desktop client (WAE WebView + `@wae/open-panel-gui`)
+ * - `runServer` hosts `@wae/open-panel-webui` as a local WebUI
  */
 import { AppError, fromNativeError } from './errors.js';
 import { loadNative } from './native.js';
-import { startServe, type ServeHandle, type ServeOptions } from './serve.js';
+import { startServer, type ServerHandle, type ServerOptions } from './server.js';
 
 export type CapabilityState = 'unsupported_platform' | 'not_implemented' | 'dependency_blocked';
 
@@ -24,7 +24,7 @@ export interface CapabilitiesReport {
     notes: string[];
 }
 
-export interface GuiOptions {
+export interface ClientOptions {
     contentDir?: string;
     title?: string;
 }
@@ -76,7 +76,7 @@ export function auditQuery(filter: AuditQuery = {}): Record<string, unknown>[] {
     return invoke(() => JSON.parse(json) as Record<string, unknown>[]);
 }
 
-export function openGui(options: GuiOptions = {}): { backend: string } {
+export function openGui(options: ClientOptions = {}): { backend: string } {
     return invoke(() => loadNative().openGui(options) as { backend: string });
 }
 
@@ -92,8 +92,8 @@ export function isGuiOpen(): boolean {
     return invoke(() => loadNative().isGuiOpen());
 }
 
-/** Open the desktop GUI client and pump until the window closes. */
-export async function runGui(options: GuiOptions = {}): Promise<string> {
+/** Open the desktop client and pump until the window closes. */
+export async function runClient(options: ClientOptions = {}): Promise<string> {
     const opened = openGui(options);
     while (pumpEvents()) {
         await new Promise((resolve) => setTimeout(resolve, 16));
@@ -105,11 +105,12 @@ export async function runGui(options: GuiOptions = {}): Promise<string> {
 /**
  * Start the local WebUI listener for browser access.
  *
- * This is the server entry. It shares the same staged panel assets as `runGui`.
+ * This is the server entry. It hosts `@wae/open-panel-webui`, not the desktop
+ * GUI package.
  */
-export async function runServe(options: ServeOptions = {}): Promise<ServeHandle> {
+export async function runServer(options: ServerOptions = {}): Promise<ServerHandle> {
     try {
-        return await startServe(options);
+        return await startServer(options);
     }
     catch (error) {
         if (error instanceof AppError) throw error;
@@ -117,5 +118,5 @@ export async function runServe(options: ServeOptions = {}): Promise<ServeHandle>
     }
 }
 
-export type { ServeHandle, ServeOptions };
+export type { ServerHandle, ServerOptions };
 export { AppError, EXIT, fromNativeError } from './errors.js';

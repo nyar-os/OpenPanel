@@ -1,5 +1,5 @@
 /**
- * Copy UI static delivery into the meta package WebView / WebUI content root.
+ * Copy WebUI static delivery into the meta package HTTP content root.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const uiRoot = path.resolve(here, '..');
 const from = path.join(uiRoot, 'dist', 'static');
-const to = path.resolve(uiRoot, '..', 'open-panel', 'dist', 'gui');
+const to = path.resolve(uiRoot, '..', 'open-panel', 'dist', 'webui');
 
 function copyDir(src: string, dest: string): void {
     fs.mkdirSync(dest, { recursive: true });
@@ -21,7 +21,7 @@ function copyDir(src: string, dest: string): void {
 }
 
 if (!fs.existsSync(path.join(from, 'index.html'))) {
-    console.error(`missing static delivery at ${from} (run the UI build first)`);
+    console.error(`missing static delivery at ${from} (run the WebUI build first)`);
     process.exit(1);
 }
 

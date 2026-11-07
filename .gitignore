@@ -26,4 +26,5 @@ dist/
 .cache/
 
 # VMZ / UI local cache
-packages/open-panel-ui/.cache/
+packages/open-panel-gui/.cache/
+packages/open-panel-webui/.cache/

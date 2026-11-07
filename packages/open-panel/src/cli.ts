@@ -3,8 +3,8 @@
  * Single installable CLI for OpenPanel.
  *
  * Entries:
- * - `open-panel gui`   desktop client (WAE WebView)
- * - `open-panel serve` local WebUI listener for browsers
+ * - `open-panel client` desktop client (WAE WebView + `@wae/open-panel-gui`)
+ * - `open-panel server` local WebUI listener (`@wae/open-panel-webui`)
  *
  * Both commands ship in the same `@wae/open-panel` package. There is no second
  * installer or parallel main binary.
@@ -19,8 +19,8 @@ import {
     auditQuery,
     capabilities,
     configureAudit,
-    runGui,
-    runServe,
+    runClient,
+    runServer,
     version,
     type CapabilitiesReport,
 } from './index.js';
@@ -157,13 +157,13 @@ cli.command('audit', 'cli.cmd.audit')
         }
     });
 
-cli.command('gui', 'cli.cmd.gui')
+cli.command('client', 'cli.cmd.client')
     .option('--content-dir <path>', 'cli.opt.content-dir')
     .option('--title <text>', 'cli.opt.title')
     .actionCtx(async (options, _args, ctx) => {
         try {
             bootstrap(options);
-            const backend = await runGui({
+            const backend = await runClient({
                 contentDir: stringOption(options, 'content-dir'),
                 title: stringOption(options, 'title'),
             });
@@ -175,7 +175,7 @@ cli.command('gui', 'cli.cmd.gui')
         }
     });
 
-cli.command('serve', 'cli.cmd.serve')
+cli.command('server', 'cli.cmd.server')
     .option('--host <host>', 'cli.opt.host')
     .option('--port <n>', 'cli.opt.port')
     .option('--content-dir <path>', 'cli.opt.content-dir')
@@ -184,7 +184,7 @@ cli.command('serve', 'cli.cmd.serve')
             // WebUI hosting is TypeScript-side. Native audit is best-effort so a
             // machine without the desktop addon can still run the server entry.
             bootstrap(options, false);
-            const handle = await runServe({
+            const handle = await runServer({
                 host: stringOption(options, 'host'),
                 port: integerOption(options, 'port'),
                 contentDir: stringOption(options, 'content-dir'),

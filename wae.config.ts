@@ -25,7 +25,7 @@ export default {
             packages: ['@wae/open-panel'],
         },
         ui: {
-            packages: ['@wae/open-panel-ui'],
+            packages: ['@wae/open-panel-gui', '@wae/open-panel-webui'],
         },
     },
     skills: {
@@ -48,8 +48,8 @@ export default {
     audit: {
         actorSources: {
             cli: 'cli',
-            gui: 'gui',
-            serve: 'serve',
+            client: 'client',
+            server: 'server',
             skill: 'skill',
         },
     },

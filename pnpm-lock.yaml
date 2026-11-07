@@ -35,9 +35,11 @@ importers:
         specifier: workspace:*
         version: link:../open-panel-win32-x64
 
+  packages/open-panel-gui: {}
+
   packages/open-panel-skills: {}
 
-  packages/open-panel-ui: {}
+  packages/open-panel-webui: {}
 
   packages/open-panel-win32-x64: {}
 
