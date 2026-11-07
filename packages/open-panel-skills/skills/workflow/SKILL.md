@@ -8,6 +8,8 @@ description: OpenPanel local ops panel workflow for desktop client and WebUI ser
 Install one package: `@wae/open-panel`. Client and server are CLI subcommands of
 the same binary. Frontend packages stay separate:
 `@wae/open-panel-gui` for `client`, `@wae/open-panel-webui` for `server`.
+Treat `client` as a multi-server control plane (many endpoints), not a 1:1
+binding to a single host.
 
 ## Safety
 

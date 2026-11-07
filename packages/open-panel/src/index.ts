@@ -3,11 +3,19 @@
  *
  * One installable owns both entries:
  * - `runClient` opens the desktop client (WAE WebView + `@wae/open-panel-gui`)
- * - `runServer` hosts `@wae/open-panel-webui` as a local WebUI
+ *   as a multi-server control plane (see `ClientServerRoster`)
+ * - `runServer` hosts `@wae/open-panel-webui` as a single-machine WebUI endpoint
  */
 import { AppError, fromNativeError } from './errors.js';
 import { loadNative } from './native.js';
 import { startServer, type ServerHandle, type ServerOptions } from './server.js';
+
+export {
+    emptyServerRoster,
+    type ClientServerRoster,
+    type ManagedServerId,
+    type ManagedServerRef,
+} from './managed-servers.js';
 
 export type CapabilityState = 'unsupported_platform' | 'not_implemented' | 'dependency_blocked';
 

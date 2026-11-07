@@ -6,10 +6,10 @@
 
 | 命令 | 角色 | 界面包 |
 |------|------|--------|
-| `open-panel client` | 桌面客户端 | `@wae/open-panel-gui`（WAE WebView） |
-| `open-panel server` | 服务端 WebUI | `@wae/open-panel-webui`（HTTP 静态托管） |
+| `open-panel client` | 多 server 控制面（桌面） | `@wae/open-panel-gui`（WAE WebView） |
+| `open-panel server` | 单机运维端点（WebUI） | `@wae/open-panel-webui`（HTTP 静态托管） |
 
-二者是同一 CLI 的子命令分流，不要拆成两套安装包或两个主程序。两套前端彼此独立，不要再合并成单一 `*-ui` 包。
+二者是同一 CLI 的子命令分流，不要拆成两套安装包或两个主程序。两套前端彼此独立，不要再合并成单一 `*-ui` 包。一份 `client` 可同时管理多个本机或远端 `server`，不是 1:1 绑定单机。
 
 规划中：支持经 SSH 把同一套 `@wae/open-panel` 安装或升级到远端机器；公网优先走 npm。内网（无私有源 / 离线包等）需另定制品通道，当前版本尚未实现。
 

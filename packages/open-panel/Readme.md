@@ -2,8 +2,8 @@
 
 Local ops panel CLI. One installable owns both entries:
 
-- `open-panel client` — desktop client (WAE WebView + `@wae/open-panel-gui`)
-- `open-panel server` — local WebUI (`@wae/open-panel-webui`)
+- `open-panel client` — multi-server control plane (WAE WebView + `@wae/open-panel-gui`)
+- `open-panel server` — single-machine WebUI endpoint (`@wae/open-panel-webui`)
 
 ```bash
 pnpm --filter @wae/open-panel exec node ./dist/cli.js capabilities --json
