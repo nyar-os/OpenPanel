@@ -1,5 +1,5 @@
 /**
- * Copy desktop GUI static delivery into the meta package WebView content root.
+ * Copy VMZ static delivery into the OpenPanel WebView content root.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,7 +21,7 @@ function copyDir(src: string, dest: string): void {
 }
 
 if (!fs.existsSync(path.join(from, 'index.html'))) {
-    console.error(`missing static delivery at ${from} (run the GUI build first)`);
+    console.error(`missing static delivery at ${from} (run \`vmz build\` first)`);
     process.exit(1);
 }
 

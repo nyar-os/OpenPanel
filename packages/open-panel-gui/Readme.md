@@ -1,9 +1,7 @@
 # `@wae/open-panel-gui`
 
-Desktop client GUI surface for OpenPanel. Consumed only by
-`open-panel client` (WAE WebView). Stages into
-`packages/open-panel/dist/gui`.
+Desktop client GUI for OpenPanel, authored in VMZ (Vue template surface) and
+consumed only by `open-panel client` (WAE WebView).
 
-The client is a multi-server control plane: one desktop session can manage
-many `open-panel server` endpoints (local or remote). Persistence and remote
-install land in later commits.
+Build with `vmz build . --profile static`, then stage into
+`packages/open-panel/dist/gui`.
