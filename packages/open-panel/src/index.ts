@@ -50,12 +50,20 @@ export {
 } from './remote-install.js';
 export { packOpenPanel, passwordFromEnv } from './remote-pack.js';
 export {
+    rdpExec,
     rdpHandshake,
     rdpProbe,
     resolveRdpBin,
+    type RdpExecInput,
+    type RdpExecReport,
     type RdpHandshakeInput,
     type RdpHandshakeReport,
 } from './remote-ironrdp.js';
+export {
+    buildAlternateShellBootstrap,
+    startPackStageServer,
+    waitForTcp,
+} from './remote-stage.js';
 export { hostStatus } from './server.js';
 export {
     listNativeServices,

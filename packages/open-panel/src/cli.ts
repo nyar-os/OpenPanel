@@ -310,6 +310,9 @@ remote.command('install', 'cli.cmd.remote-install')
     .option('--server-id <id>', 'cli.opt.server-id')
     .option('--label <text>', 'cli.opt.server-label')
     .option('--skip-start', 'cli.opt.skip-start')
+    .option('--package-url <url>', 'cli.opt.package-url')
+    .option('--remote-tarball <path>', 'cli.opt.remote-tarball')
+    .option('--pack-base-url <url>', 'cli.opt.pack-base-url')
     .actionCtx(async (options, _args, ctx) => {
         try {
             bootstrap(options, false);
@@ -333,6 +336,9 @@ remote.command('install', 'cli.cmd.remote-install')
                 serverId: stringOption(options, 'server-id'),
                 label: stringOption(options, 'label'),
                 skipStart: flag(options, 'skip-start'),
+                packageUrl: stringOption(options, 'package-url'),
+                remoteTarball: stringOption(options, 'remote-tarball'),
+                packBaseUrl: stringOption(options, 'pack-base-url'),
             }]);
             const lines = [
                 `pack: ${report.pack.tarballPath}`,
@@ -341,7 +347,8 @@ remote.command('install', 'cli.cmd.remote-install')
                     if (item.ok) {
                         return `ok ${item.host} channel=${item.channel} url=${item.url ?? ''} roster=${item.rosterId ?? ''}`;
                     }
-                    return `fail ${item.host}: ${item.error ?? 'unknown error'}`;
+                    const next = item.next ? ` next=${item.next}` : '';
+                    return `fail ${item.host}: ${item.error ?? 'unknown error'}${next}`;
                 }),
             ];
             emit(options, ctx, report, lines.join('\n'));

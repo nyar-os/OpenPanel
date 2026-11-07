@@ -18,6 +18,13 @@ export interface RdpHandshakeInput {
     domain?: string;
 }
 
+export interface RdpExecInput extends RdpHandshakeInput {
+    /** Full AlternateShell string (MS-RDPBCGR ≤512 bytes including NUL). */
+    shell: string;
+    workDir?: string;
+    sessionTimeoutSecs?: number;
+}
+
 export interface RdpHandshakeReport {
     ok: boolean;
     host?: string;
@@ -32,6 +39,14 @@ export interface RdpHandshakeReport {
     notes?: string[];
     error?: string;
     stack?: string;
+}
+
+export interface RdpExecReport extends RdpHandshakeReport {
+    alternateShell?: string;
+    workDir?: string;
+    endReason?: string;
+    elapsedMs?: number;
+    responseFrames?: number;
 }
 
 function candidateBins(): string[] {
@@ -58,18 +73,7 @@ export function resolveRdpBin(): string {
     });
 }
 
-/** TCP probe via the Rust client. */
-export function rdpProbe(host: string, port = 3389): RdpHandshakeReport {
-    const bin = resolveRdpBin();
-    const result = spawnSync(bin, ['probe', '--host', host, '--port', String(port)], {
-        encoding: 'utf8',
-        windowsHide: true,
-    });
-    return parseJson(result.stdout, result.stderr, result.status);
-}
-
-/** Full IronRDP handshake through CredSSP / connection finalization. */
-export function rdpHandshake(input: RdpHandshakeInput): RdpHandshakeReport {
+function assertAuth(input: RdpHandshakeInput): { host: string, user: string } {
     const host = input.host.trim();
     const user = input.user.trim();
     if (!host) throw new AppError({ code: 'invalid_argument', message: '`--host` is required' });
@@ -86,7 +90,22 @@ export function rdpHandshake(input: RdpHandshakeInput): RdpHandshakeReport {
             message: `environment variable \`${input.passwordEnv}\` is empty or unset`,
         });
     }
+    return { host, user };
+}
 
+/** TCP probe via the Rust client. */
+export function rdpProbe(host: string, port = 3389): RdpHandshakeReport {
+    const bin = resolveRdpBin();
+    const result = spawnSync(bin, ['probe', '--host', host, '--port', String(port)], {
+        encoding: 'utf8',
+        windowsHide: true,
+    });
+    return parseJson(result.stdout, result.stderr, result.status);
+}
+
+/** Full IronRDP handshake through CredSSP / connection finalization. */
+export function rdpHandshake(input: RdpHandshakeInput): RdpHandshakeReport {
+    const { host, user } = assertAuth(input);
     const bin = resolveRdpBin();
     const args = [
         'handshake',
@@ -107,6 +126,46 @@ export function rdpHandshake(input: RdpHandshakeInput): RdpHandshakeReport {
         env: process.env,
     });
     return parseJson(result.stdout, result.stderr, result.status);
+}
+
+/**
+ * Connect with `Config::alternate_shell` and drive the ActiveStage until the
+ * remote process ends or the session times out.
+ */
+export function rdpExec(input: RdpExecInput): RdpExecReport {
+    const { host, user } = assertAuth(input);
+    const shell = input.shell.trim();
+    if (!shell) {
+        throw new AppError({ code: 'invalid_argument', message: '`--shell` / alternate_shell is required' });
+    }
+
+    const bin = resolveRdpBin();
+    const args = [
+        'exec',
+        '--host',
+        host,
+        '--user',
+        user,
+        '--password-env',
+        input.passwordEnv,
+        '--port',
+        String(input.port ?? 3389),
+        '--shell',
+        shell,
+        '--session-timeout-secs',
+        String(input.sessionTimeoutSecs ?? 180),
+    ];
+    if (input.workDir?.trim()) args.push('--work-dir', input.workDir.trim());
+    if (input.domain?.trim()) args.push('--domain', input.domain.trim());
+
+    const result = spawnSync(bin, args, {
+        encoding: 'utf8',
+        windowsHide: true,
+        env: process.env,
+        // Install sessions can outlive the default spawn sync limits on busy hosts.
+        timeout: ((input.sessionTimeoutSecs ?? 180) + 30) * 1000,
+    });
+    return parseJson(result.stdout, result.stderr, result.status) as RdpExecReport;
 }
 
 function parseJson(stdout: string | null, stderr: string | null, status: number | null): RdpHandshakeReport {

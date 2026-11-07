@@ -1,12 +1,13 @@
 {
     "cli": {
-        "intro": "open-panel — 本机运维面板（服务 / 站点 / 进程 / 日志）。同一安装物：`client` 桌面客户端，`server` WebUI，`servers` 多机名册，`remote` 探测/安装。",
+        "intro": "open-panel — 本机运维面板（服务 / 站点 / 进程 / 日志）。同一安装物：`install` 写入 WebUI 凭据，`client` 桌面客户端，`server` WebUI，`servers` 多机名册，`remote` 探测/安装。",
         "cmd": {
             "capabilities": "报告领域能力及其可用性",
             "version": "打印原生插件版本",
             "audit": "读取当前 actor 的审计记录",
+            "install": "写入本机 WebUI 凭据（用户 `administrator` + 高强度随机密码，默认端口 8888）。与 `npx @wae/open-panel install` 及包 postinstall 同一路径",
             "client": "打开桌面客户端 GUI，并泵送宿主事件直到窗口关闭",
-            "server": "启动本机 WebUI 监听，供浏览器访问",
+            "server": "启动本机 WebUI 监听，供浏览器访问（只读取 install 已写入的凭据）",
             "servers": "管理客户端使用的本地多 server 名册",
             "servers-list": "列出已登记 server 与当前选中项",
             "servers-add": "新增或更新一条 server 登记",
@@ -25,19 +26,24 @@
             "content-dir": "已暂存面板 UI 构建目录",
             "title": "桌面窗口标题",
             "host": "主机名或地址",
-            "port": "TCP 端口（WebUI 默认 17890）",
+            "port": "TCP 端口（WebUI 默认 8888）",
+            "advertise-host": "安装完成后打印的登录 URL 中使用的主机名/地址",
+            "install-force": "即使已有凭据文件也重新生成 WebUI 密码",
             "kind": "按 actor 类型过滤审计记录",
             "id": "按 actor id 过滤审计记录",
             "capability": "按能力 id 过滤审计记录",
             "limit": "审计记录条数上限",
             "server-id": "稳定的 managed server id",
             "server-label": "managed server 的人类可读标签",
-            "server-url": "WebUI 完整 base URL（例如 http://127.0.0.1:17890/）",
+            "server-url": "WebUI 完整 base URL（例如 http://127.0.0.1:8888/）",
             "remote-user": "远端账户名（密码只通过 `--password-env` 传入）",
             "password-env": "存放远端密码的环境变量名",
             "remote-channel": "安装通道：`auto`、`rdp`、`ssh`、`winrm` 或 `none`",
             "pack-local": "强制把本地 workspace 包装成 tarball",
-            "skip-start": "安装后不在远端启动 `open-panel server`"
+            "skip-start": "安装后不在远端启动 `open-panel server`",
+            "package-url": "远端可拉取的引导脚本 URL（跳过控制器临时 HTTP 投递）",
+            "remote-tarball": "远端主机上已有的打包 `.tgz` 路径",
+            "pack-base-url": "远端可访问的控制器 pack 源（覆盖自动探测的局域网 URL）"
         }
     }
 }

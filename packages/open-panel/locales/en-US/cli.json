@@ -1,12 +1,13 @@
 {
     "cli": {
-        "intro": "open-panel — local ops panel for services, sites, processes, and logs. One installable with `client` (desktop GUI), `server` (WebUI), `servers` (roster), and `remote` (probe/install).",
+        "intro": "open-panel — local ops panel for services, sites, processes, and logs. One installable with `install` (WebUI credentials), `client` (desktop GUI), `server` (WebUI), `servers` (roster), and `remote` (probe/install).",
         "cmd": {
             "capabilities": "Report domain capabilities and their availability",
             "version": "Print the native addon version",
             "audit": "Read audit records for the current actor",
+            "install": "Write local WebUI credentials (`administrator` + strong password, default port 8888). Same path as `npx @wae/open-panel install` and package postinstall",
             "client": "Open the desktop client GUI and pump host events until it closes",
-            "server": "Start the local WebUI listener for browser access",
+            "server": "Start the local WebUI listener for browser access (reads credentials from install)",
             "servers": "Manage the local multi-server roster used by the client",
             "servers-list": "List managed servers and the active selection",
             "servers-add": "Add or update a managed server entry",
@@ -25,19 +26,24 @@
             "content-dir": "Directory containing the staged panel UI build",
             "title": "Desktop window title",
             "host": "Host name or address",
-            "port": "TCP port (default 17890 for WebUI)",
+            "port": "TCP port (default 8888 for WebUI)",
+            "advertise-host": "Host shown in the printed login URL after install",
+            "install-force": "Rotate WebUI credentials even when a credentials file already exists",
             "kind": "Filter audit records by actor kind",
             "id": "Filter audit records by actor id",
             "capability": "Filter audit records by capability id",
             "limit": "Maximum number of audit records",
             "server-id": "Stable managed server id",
             "server-label": "Human label for the managed server",
-            "server-url": "Full WebUI base URL (e.g. http://127.0.0.1:17890/)",
+            "server-url": "Full WebUI base URL (e.g. http://127.0.0.1:8888/)",
             "remote-user": "Remote account name (password comes from `--password-env`)",
             "password-env": "Environment variable that holds the remote password",
             "remote-channel": "Install channel: `auto`, `rdp`, `ssh`, `winrm`, or `none`",
             "pack-local": "Force packing the local workspace package as a tarball",
-            "skip-start": "Install without starting `open-panel server` on the remote host"
+            "skip-start": "Install without starting `open-panel server` on the remote host",
+            "package-url": "Bootstrap script URL the remote can fetch (skips controller HTTP staging)",
+            "remote-tarball": "Known remote filesystem path to a packed `.tgz` already on the host",
+            "pack-base-url": "Controller pack origin reachable from the remote (overrides auto LAN URL)"
         }
     }
 }
