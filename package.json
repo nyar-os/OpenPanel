@@ -18,6 +18,9 @@
         "stage:native": "node --experimental-strip-types scripts/stage-native.ts",
         "check:skills": "node --experimental-strip-types scripts/check-skills.ts",
         "check:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+        "placeholder": "nifty publish --placeholder --dry-run",
+        "placeholder:publish": "nifty publish --placeholder",
+        "placeholder:trust": "nifty trust",
         "client": "pnpm run build && pnpm --filter @wae/open-panel exec node ./dist/cli.js client",
         "server": "pnpm run build && pnpm --filter @wae/open-panel exec node ./dist/cli.js server"
     },
