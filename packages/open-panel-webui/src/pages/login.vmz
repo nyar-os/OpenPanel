@@ -1,0 +1,150 @@
+<template>
+    <div data-open-panel="webui-login" class="op-login" data-theme="dark">
+        <form id="op-login-form" class="op-login__card">
+            <p class="op-brand">
+                OpenPanel
+            </p>
+            <h1>
+                Sign in
+            </h1>
+            <p class="op-login__lead">
+                User is fixed as <code>administrator</code>. Password was set by
+                <code>open-panel install</code>.
+            </p>
+            <label class="op-login__label" for="username">
+                Username
+            </label>
+            <input
+                id="username"
+                class="op-login__input"
+                name="username"
+                autocomplete="username"
+                value="administrator"
+                required
+            />
+            <label class="op-login__label" for="password">
+                Password
+            </label>
+            <input
+                id="password"
+                class="op-login__input"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+            />
+            <p id="op-login-err" class="op-login__err" role="alert"></p>
+            <button class="op-login__submit" type="submit">
+                Sign in
+            </button>
+        </form>
+    </div>
+</template>
+<style>
+html,
+body {
+    width: 100%;
+    min-height: 100%;
+    margin: 0;
+    padding: 0;
+}
+.op-login {
+    min-height: 100vh;
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    color: var(--vmz-text-ink, #e7f2ec);
+    background:
+        radial-gradient(circle at 88% 12%, rgba(61, 155, 110, 0.18), transparent 40%),
+        linear-gradient(160deg, #101a16, #0b1210 60%, #121c18);
+}
+.op-login__card {
+    width: min(22rem, calc(100% - 2rem));
+    display: grid;
+    gap: 0.65rem;
+}
+.op-brand {
+    margin: 0;
+    color: #54ad7f;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.op-login h1 {
+    margin: 0;
+    font-size: 1.65rem;
+}
+.op-login__lead {
+    margin: 0 0 0.35rem;
+    color: var(--vmz-text-steel, #9bb5a8);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+.op-login__label {
+    font-size: 0.85rem;
+    color: var(--vmz-text-steel, #9bb5a8);
+}
+.op-login__input {
+    padding: 0.65rem 0.75rem;
+    border-radius: 0.45rem;
+    border: 1px solid var(--vmz-line-default, #2e4038);
+    background: rgba(8, 14, 12, 0.55);
+    color: inherit;
+}
+.op-login__err {
+    min-height: 1.2rem;
+    margin: 0;
+    color: #f0a5a5;
+    font-size: 0.85rem;
+}
+.op-login__submit {
+    margin-top: 0.25rem;
+    padding: 0.7rem 0.9rem;
+    border: 0;
+    border-radius: 0.45rem;
+    cursor: pointer;
+    background: #3d9b6e;
+    color: #06110c;
+    font-weight: 700;
+}
+</style>
+<script client>
+export default class LoginPage {
+    constructor() {
+        queueMicrotask(() => this.bindForm());
+    }
+
+    bindForm() {
+        const form = document.getElementById('op-login-form');
+        const err = document.getElementById('op-login-err');
+        if (!form || !err) return;
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            err.textContent = '';
+            const username = document.getElementById('username');
+            const password = document.getElementById('password');
+            try {
+                const response = await fetch('/api/v0/login', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        username: username && 'value' in username ? username.value : 'administrator',
+                        password: password && 'value' in password ? password.value : '',
+                    }),
+                });
+                const payload = await response.json();
+                if (!response.ok || !payload.ok) {
+                    err.textContent = (payload && payload.error && payload.error.message) || 'login failed';
+                    return;
+                }
+                location.href = '/';
+            }
+            catch (error) {
+                err.textContent = error instanceof Error ? error.message : String(error);
+            }
+        });
+    }
+}
+</script>

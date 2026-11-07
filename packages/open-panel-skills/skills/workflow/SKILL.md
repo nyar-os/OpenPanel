@@ -21,8 +21,11 @@ binding to a single host.
 
 Useful invocations:
 
+- `open-panel install` (or `npx @wae/open-panel install`) — write WebUI credentials before server
 - `open-panel capabilities --json`
 - `open-panel version --json`
 - `open-panel client --title <text>`
-- `open-panel server --host <host> --port <n>`
+- `open-panel server --host <host>` — default port `8888`, login at `/login`
 - `open-panel audit --limit <n> --json`
+
+WebUI user is always `administrator`. The strong password is created only by `install` / postinstall, never by `server`.

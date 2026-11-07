@@ -78,7 +78,7 @@ fn resolve_url(server: &ManagedServerRef) -> Option<String> {
         return Some(if url.ends_with('/') { url.to_string() } else { format!("{url}/") });
     }
     let host = server.host.as_deref().map(str::trim).filter(|value| !value.is_empty())?;
-    let port = server.port.unwrap_or(17890);
+    let port = server.port.unwrap_or(8888);
     Some(format!("http://{host}:{port}/"))
 }
 
