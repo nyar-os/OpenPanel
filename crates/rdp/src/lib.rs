@@ -1061,7 +1061,7 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                         }
                     }
                     breadcrumb(&format!(
-                        "drive_active_stage:inject_begin chars={} inputFlags={input_flags:#06x}",
+                        "drive_active_stage:inject_begin chars={}",
                         command.chars().count()
                     ));
                     match inject_run_dialog_command(
@@ -1079,13 +1079,33 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                             breadcrumb("drive_active_stage:inject_done");
                         }
                         Err(error) if is_transport_gone_msg(&error.to_string()) => {
+                            injected = true;
                             layers.push("inject-transport-gone");
-                            if !hold_after_inject {
-                                injected = true;
-                            }
+                            layers.push("win-r-scancode-inject");
                             breadcrumb(&format!(
                                 "drive_active_stage:inject_transport_gone hold={hold_after_inject}"
                             ));
+                            if let Some(ack_path) = rdpdr_ack_path.as_ref() {
+                                if !ack_seen {
+                                    for _ in 0..15_u32 {
+                                        if let Ok(body) = std::fs::read_to_string(ack_path) {
+                                            let trimmed = body.trim();
+                                            if !trimmed.is_empty() {
+                                                ack_seen = true;
+                                                layers.push("rdpdr-ack-seen");
+                                                ack_preview = Some(
+                                                    trimmed.chars().take(120).collect(),
+                                                );
+                                                breadcrumb(
+                                                    "drive_active_stage:rdpdr_ack_after_inject_gone",
+                                                );
+                                                break;
+                                            }
+                                        }
+                                        std::thread::sleep(Duration::from_millis(300));
+                                    }
+                                }
+                            }
                             break 'active ExecEndReason::TransportClosed;
                         }
                         Err(error)
