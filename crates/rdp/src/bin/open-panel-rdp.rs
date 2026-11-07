@@ -13,7 +13,7 @@ use serde_json::Value;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> (--shell <cmd> | --shell-env <VAR>) [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--no-force-fresh-logon] [--inject-run]"
+        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> (--shell <cmd> | --shell-env <VAR>) [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--force-fresh-logon] [--inject-run]"
     );
     std::process::exit(2);
 }
@@ -232,11 +232,9 @@ fn main() -> ExitCode {
                 .unwrap_or("180")
                 .parse::<u64>()
                 .unwrap_or_else(|_| usage());
-            // Defaults for the install path on lab hosts:
-            // - no force-logoff (CredSSP/finalization of `logoff` has aborted the client)
-            // - no Win+R inject (ActiveStage graphics decode has aborted the client)
-            // Payload rides Client Info AlternateShell; hold drains PDUs only.
-            // Opt in with `--force-fresh-logon` / `--inject-run` when debugging.
+            // Default OFF: force-logoff then payload hold has aborted lab clients
+            // (empty stdout, exit -1). Proven path is AlternateShell without force
+            // (or `--inject-run` Win+R). Opt in with `--force-fresh-logon`.
             let force_fresh_logon = has_flag(&args, "--force-fresh-logon");
             let inject_run_dialog = has_flag(&args, "--inject-run");
             let rdpdr_share_dir = arg_value(&args, "--rdpdr-dir").map(PathBuf::from);

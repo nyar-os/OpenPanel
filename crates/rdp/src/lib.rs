@@ -208,8 +208,8 @@ impl Default for RdpConnectOptions {
             inject_run_dialog: false,
             settle: Duration::from_secs(12),
             // Default on so disconnected single-user sessions cannot swallow
-            // Client Info AlternateShell. Opt out via CLI `--no-force-fresh-logon`.
-            force_fresh_logon: true,
+            // Opt in via CLI `--force-fresh-logon` — lab hosts abort after force.
+            force_fresh_logon: false,
             logoff_timeout: Duration::from_secs(45),
             rdpdr_share_dir: None,
         }
@@ -555,9 +555,11 @@ fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
         }
     };
 
+    // Logoff only needs logon + a few seconds for `logoff` to tear the session
+    // down. A long post-logon sleep blocks the payload pass and invites races.
     let active = match hold_transport_without_graphics(
         connected,
-        options.logoff_timeout.min(Duration::from_secs(25)),
+        Duration::from_secs(8),
         "force-logoff-hold",
     ) {
         Ok(value) => value,
@@ -621,47 +623,155 @@ fn connect_session_with_retry(options: RdpConnectOptions, after_logoff: bool) ->
     Err(last_error.unwrap_or_else(|| Error::Session("post-logoff reconnect failed".into())))
 }
 
-/// Sleep with the RDP socket held. Do not call ActiveStage or `read_pdu`.
+/// Drive ActiveStage until `SaveSessionInfo` logon, then sleep without reading.
 ///
-/// Lab hosts abort inside IronRDP FastPath parse (native AV, empty stdout).
-/// `AlternateShell` already started at Client Info — keep the session up so a
-/// detached bootstrap (`Start-Process` + RDPDR copy) can finish staging.
+/// Lab evidence: first X.224 carries logon; later FastPath `read_pdu` aborts
+/// this process (native AV). `AlternateShell` / `logoff` is running by logon —
+/// after that keep the TCP session up briefly so a disconnected session retains
+/// the remote process.
 fn hold_transport_without_graphics(
     connected: ConnectedSession,
     session_timeout: Duration,
     layer_label: &'static str,
 ) -> Result<ActiveDriveReport> {
-    breadcrumb(&format!("hold_transport:sleep_only label={layer_label}"));
+    breadcrumb(&format!("hold_transport:until_logon label={layer_label}"));
     let input_flags = connected.connection.input_flags.bits();
+    let desktop_w = connected.connection.desktop_size.width;
+    let desktop_h = connected.connection.desktop_size.height;
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_w, desktop_h);
+    let mut active_stage = ActiveStageBuilder {
+        static_channels: connected.connection.static_channels,
+        user_channel_id: connected.connection.user_channel_id,
+        io_channel_id: connected.connection.io_channel_id,
+        message_channel_id: connected.connection.message_channel_id,
+        share_id: connected.connection.share_id,
+        compression_type: connected.connection.compression_type,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build();
+
+    let mut framed = connected.framed;
+    {
+        let (stream, _) = framed.get_inner_mut();
+        stream
+            .sock
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .map_err(|error| Error::Session(error.to_string()))?;
+        stream
+            .sock
+            .set_write_timeout(Some(Duration::from_secs(20)))
+            .map_err(|error| Error::Session(error.to_string()))?;
+    }
+
     let started = Instant::now();
     let mut layers = connected.layers;
     layers.push(layer_label);
-    layers.push("hold-sleep-only");
+    layers.push("hold-until-logon");
+    let mut response_frames = 0_u64;
+    let mut logon_seen = false;
+    let logon_deadline = started + Duration::from_secs(20);
 
-    let hold = session_timeout.min(Duration::from_secs(90));
-    breadcrumb(&format!("hold_transport:sleep_begin secs={}", hold.as_secs()));
-    let mut remaining = hold;
-    while !remaining.is_zero() {
-        let slice = remaining.min(Duration::from_secs(5));
-        std::thread::sleep(slice);
-        remaining = remaining.saturating_sub(slice);
+    let end_reason = 'hold: {
+        while Instant::now() < logon_deadline && !logon_seen {
+            let (action, payload) = match framed.read_pdu() {
+                Ok(frame) => frame,
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        || error.kind() == io::ErrorKind::TimedOut =>
+                {
+                    continue;
+                }
+                Err(error) if is_transport_gone_io(&error) => {
+                    breadcrumb("hold_transport:pre_logon_transport_gone");
+                    break 'hold ExecEndReason::TransportClosed;
+                }
+                Err(error) => return Err(Error::Session(error.to_string())),
+            };
+
+            if action == ironrdp_pdu::Action::FastPath {
+                breadcrumb("hold_transport:skip_fastpath_pre_logon");
+                continue;
+            }
+
+            let outputs = match catch_unwind(AssertUnwindSafe(|| {
+                active_stage.process(&mut image, action, &payload, None)
+            })) {
+                Ok(Ok(outputs)) => outputs,
+                Ok(Err(error)) => {
+                    let message = error.to_string();
+                    breadcrumb(&format!("hold_transport:process_err {message}"));
+                    if is_transport_gone_msg(&message) {
+                        break 'hold ExecEndReason::TransportClosed;
+                    }
+                    continue;
+                }
+                Err(panic) => {
+                    breadcrumb(&format!(
+                        "hold_transport:process_panic {}",
+                        panic_message(&panic)
+                    ));
+                    continue;
+                }
+            };
+
+            for out in outputs {
+                match out {
+                    ActiveStageOutput::ResponseFrame(frame) => {
+                        if let Err(error) = framed.write_all(&frame) {
+                            if is_transport_gone_io(&error) {
+                                break 'hold ExecEndReason::TransportClosed;
+                            }
+                            return Err(Error::Session(error.to_string()));
+                        }
+                        response_frames += 1;
+                    }
+                    ActiveStageOutput::SaveSessionInfo { logon_complete } if logon_complete => {
+                        logon_seen = true;
+                        layers.push("save-session-info-logon");
+                        breadcrumb("hold_transport:logon_complete");
+                    }
+                    ActiveStageOutput::Terminate(_) => {
+                        breadcrumb("hold_transport:server_terminate");
+                        break 'hold ExecEndReason::ServerTerminate;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if !logon_seen {
+            breadcrumb("hold_transport:logon_deadline");
+            break 'hold ExecEndReason::ReadIdle;
+        }
+
+        let remain = session_timeout
+            .saturating_sub(started.elapsed())
+            .min(Duration::from_secs(90));
         breadcrumb(&format!(
-            "hold_transport:sleep_tick left_secs={}",
-            remaining.as_secs()
+            "hold_transport:post_logon_sleep secs={}",
+            remain.as_secs()
         ));
-    }
-    breadcrumb("hold_transport:sleep_done");
+        if !remain.is_zero() {
+            std::thread::sleep(remain);
+        }
+        breadcrumb("hold_transport:sleep_done");
+        ExecEndReason::SessionTimeout
+    };
 
-    let _keep_alive = connected.framed;
+    drop(framed);
+    breadcrumb(&format!(
+        "hold_transport:done end={end_reason:?} logon={logon_seen}"
+    ));
     Ok(ActiveDriveReport {
         host: connected.host,
         port: connected.port,
         remote_addr: connected.remote_addr.to_string(),
         local_addr: connected.local_addr.to_string(),
         layers,
-        end_reason: ExecEndReason::SessionTimeout,
+        end_reason,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        response_frames: 0,
+        response_frames,
         injected: false,
         input_flags,
     })
