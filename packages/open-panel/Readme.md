@@ -2,11 +2,11 @@
 
 Local ops panel CLI. One installable owns both entries:
 
-- `open-panel gui` — desktop client (WAE WebView)
-- `open-panel serve` — local WebUI for browsers
+- `open-panel client` — desktop client (WAE WebView + `@wae/open-panel-gui`)
+- `open-panel server` — local WebUI (`@wae/open-panel-webui`)
 
 ```bash
 pnpm --filter @wae/open-panel exec node ./dist/cli.js capabilities --json
-pnpm --filter @wae/open-panel exec node ./dist/cli.js gui
-pnpm --filter @wae/open-panel exec node ./dist/cli.js serve --port 17890
+pnpm --filter @wae/open-panel exec node ./dist/cli.js client
+pnpm --filter @wae/open-panel exec node ./dist/cli.js server --port 17890
 ```
