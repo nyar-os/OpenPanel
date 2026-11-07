@@ -11,11 +11,14 @@
 //! `unsupported_platform`, `not_implemented`, and `dependency_blocked`.
 
 mod audit;
+pub mod config;
 mod error;
+pub mod native_service;
 pub mod platform;
 
 pub use audit::capability_ids;
 pub use error::{CapabilityState, Error, ErrorPayload, Result, capability_code};
+pub use native_service::{NativeServiceBackend, NativeServiceInfo, NativeServiceState};
 pub use platform::{Capabilities, Capability, Platform, capabilities, platform_arch, platform_name};
 
 /// Optional ACME SSL helpers (`auto-ssl` crate) for `open-panel server` site certificates.
