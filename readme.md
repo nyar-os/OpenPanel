@@ -36,12 +36,12 @@ pnpm --filter @wae/open-panel exec node ./dist/cli.js client --server-id local
 
 Windows 远端安装主通道是 **RDP(3389)**，由 Rust crate `open-panel-rdp`（IronRDP）实现协议栈；**禁止**依赖 `mstsc` / FreeRDP / `wfreerdp`，也**不**要求远端先装 OpenSSH。
 
-已打通：TCP→X.224/MCS/GCC→TLS→CredSSP 握手，以及 `Config::alternate_shell` + ActiveStage 远程执行。安装产物投递策略：
+已打通：TCP→X.224/MCS/GCC→TLS→CredSSP 握手，以及 `Config::alternate_shell` + ActiveStage，并在 logon 后尝试 Win+R 键盘注入作为断开会话重连时的后备。安装产物投递策略：
 
 1. **默认**：控制器起临时 HTTP，远端用短 `powershell iwr …|iex`（AlternateShell ≤512 字节）拉取 `i.ps1` + tarball。需远端能访问控制器（可用 `--pack-base-url` / `OPEN_PANEL_PACK_BASE_URL`）。
 2. **已知远端路径**：`--remote-tarball` 指向主机上已有的 `.tgz`。
 3. **已有引导 URL**：`--package-url` 指向远端可拉的脚本。
-4. **下一步**：RDPDR 盘符重定向投递（无 SSH、远端也够不到控制器时的主路径）。公网优先 npm；包仍为 `0.0.0` 时本地 `npm pack`。
+4. **下一步**：RDPDR 盘符重定向投递（无 SSH、远端也够不到控制器时的主路径），以及确认服务器端「单会话重连」策略下 AlternateShell / 注入真正落地。公网优先 npm；包仍为 `0.0.0` 时本地 `npm pack`。
 
 ```bash
 cargo build -p open-panel-rdp
