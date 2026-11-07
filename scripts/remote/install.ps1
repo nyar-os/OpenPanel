@@ -1,9 +1,9 @@
 ﻿# OpenPanel remote install via jsDelivr. Runs on the remote host only.
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$ntfyTopic = "op-gh-raw-1107"
-# Tarball is stable on @dev; Win+R must pin install.ps1 itself to the push commit (CDN @dev lags).
-$cdnBase = "https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@4e6d417967b290cdedf0d8ac875194a6c5b0228e/scripts/remote"
+$ntfyTopic = "op-inst-bf1"
+# Tarball pin (short rev); Win+R must also pin install.ps1 itself (CDN @dev lags).
+$cdnBase = "https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@4e6d417/scripts/remote"
 $tarballName = "wae-open-panel-0.0.0.tgz"
 $pkgName = "@wae/open-panel"
 $serverPort = 8888
@@ -65,7 +65,7 @@ function Resolve-OpenPanelCli {
 }
 
 try {
-  Write-OpNtfy "boot"
+  Write-OpNtfy "boot:bf1"
   $stageRoot = Join-Path $env:TEMP ("open-panel-rdp-" + [guid]::NewGuid().ToString("n"))
   New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
   $tarball = Join-Path $stageRoot $tarballName
