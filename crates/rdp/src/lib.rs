@@ -143,6 +143,14 @@ pub struct RdpConnectOptions {
     pub inject_run_dialog: bool,
     /// How long to wait for graphics / logon before Win+R injection.
     pub settle: Duration,
+    /// Before the real shell session, reconnect after forcing a logoff so
+    /// Windows starts a fresh logon and honors `AlternateShell`.
+    ///
+    /// Single-user hosts commonly restore a disconnected desktop and ignore
+    /// Client Info `AlternateShell`; a prior `logoff` clears that session.
+    pub force_fresh_logon: bool,
+    /// Settle / hold budget for the preparatory logoff pass.
+    pub logoff_timeout: Duration,
 }
 
 impl Default for RdpConnectOptions {
@@ -162,6 +170,8 @@ impl Default for RdpConnectOptions {
             session_timeout: Duration::from_secs(180),
             inject_run_dialog: true,
             settle: Duration::from_secs(8),
+            force_fresh_logon: true,
+            logoff_timeout: Duration::from_secs(45),
         }
     }
 }
@@ -236,6 +246,12 @@ pub struct ExecReport {
     pub response_frames: u64,
     /// Whether a Win+R keyboard injection of the shell was attempted.
     pub injected_run_dialog: bool,
+    /// Whether a preparatory logoff pass ran before the shell session.
+    pub forced_fresh_logon: bool,
+    /// How the preparatory logoff pass ended (when `forced_fresh_logon`).
+    pub logoff_end_reason: Option<ExecEndReason>,
+    /// Wall time spent in the preparatory logoff pass.
+    pub logoff_elapsed_ms: Option<u64>,
     /// Server Input capability flags (for diagnosing fast-path input support).
     pub input_flags: u16,
     /// Human notes / delivery reminders.
@@ -285,17 +301,155 @@ pub fn handshake(options: RdpConnectOptions) -> Result<HandshakeReport> {
 /// The shell string must fit MS-RDPBCGR's 512-byte limit. Large payloads belong
 /// in a URL fetch or a future RDPDR stage, not in this field.
 ///
-/// When `inject_run_dialog` is true (default), the same shell is also typed into
-/// the remote Win+R dialog after a short settle. That covers Windows hosts that
-/// reconnect a disconnected desktop and ignore AlternateShell.
+/// When `force_fresh_logon` is true (default), a preparatory pass injects
+/// `logoff` so a disconnected single-user session cannot swallow AlternateShell.
+/// When `inject_run_dialog` is true, the shell is also typed into Win+R after
+/// settle as a reconnect fallback.
 pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     validate_connect_options(&options, true)?;
+
+    let mut forced_fresh_logon = false;
+    let mut logoff_end_reason = None;
+    let mut logoff_elapsed_ms = None;
+    let mut layers_prefix = Vec::new();
+
+    if options.force_fresh_logon {
+        let logoff = run_logoff_pass(&options)?;
+        forced_fresh_logon = true;
+        logoff_end_reason = Some(logoff.end_reason);
+        logoff_elapsed_ms = Some(logoff.elapsed_ms);
+        layers_prefix.extend(logoff.layers);
+        layers_prefix.push("force-fresh-logon-gap");
+        // Give Terminal Services time to tear down the logged-off session.
+        std::thread::sleep(Duration::from_secs(4));
+    }
+
     let shell = options.alternate_shell.clone();
     let work_dir = options.work_dir.clone();
     let session_timeout = options.session_timeout;
     let settle = options.settle;
+    // After a forced logoff, AlternateShell should run on a fresh logon. Keep
+    // Win+R as a backup unless the caller disabled it.
     let inject_run_dialog = options.inject_run_dialog;
     let connected = connect_session(options)?;
+
+    let active = drive_active_stage(DriveActiveOpts {
+        connected,
+        session_timeout,
+        settle,
+        inject_command: inject_run_dialog.then(|| shell.clone()),
+        layer_label: "alternate-shell-active-stage",
+        hold_after_inject: true,
+    })?;
+
+    let mut layers = layers_prefix;
+    layers.extend(active.layers);
+
+    Ok(ExecReport {
+        ok: true,
+        host: active.host,
+        port: active.port,
+        remote_addr: active.remote_addr,
+        local_addr: active.local_addr,
+        alternate_shell: truncate_for_report(&shell),
+        work_dir,
+        layers,
+        end_reason: active.end_reason,
+        elapsed_ms: active.elapsed_ms,
+        response_frames: active.response_frames,
+        injected_run_dialog: active.injected,
+        forced_fresh_logon,
+        logoff_end_reason,
+        logoff_elapsed_ms,
+        input_flags: active.input_flags,
+        notes: vec![
+            "IronRDP alternate_shell session completed.".into(),
+            "Payload delivery stays outside AlternateShell (512-byte wire cap). Use HTTP bootstrap or future RDPDR.".into(),
+            "force_fresh_logon clears disconnected single-user sessions so AlternateShell is honored.".into(),
+            "Win+R scancode injection remains a reconnect fallback.".into(),
+            "External RDP CLIs (mstsc / freerdp / wfreerdp) are not part of this path.".into(),
+            format!(
+                "endReason={:?} injectedRunDialog={} forcedFreshLogon={} logoffEnd={:?} inputFlags={:#06x}",
+                active.end_reason,
+                active.injected,
+                forced_fresh_logon,
+                logoff_end_reason,
+                active.input_flags
+            ),
+        ],
+    })
+}
+
+struct LogoffPassReport {
+    end_reason: ExecEndReason,
+    elapsed_ms: u64,
+    layers: Vec<&'static str>,
+}
+
+/// Connect, inject `logoff` via Win+R (and AlternateShell when honored), then wait
+/// for the session to end so the next connect starts a fresh logon.
+fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
+    let mut logoff_opts = options.clone();
+    // Prefer Client Info AlternateShell when the host already has no disconnected
+    // session. Win+R covers the reconnect case where AlternateShell is ignored.
+    logoff_opts.alternate_shell = "logoff".into();
+    logoff_opts.work_dir = String::new();
+    logoff_opts.session_timeout = options.logoff_timeout;
+    logoff_opts.settle = Duration::from_secs(5);
+    logoff_opts.inject_run_dialog = true;
+    logoff_opts.force_fresh_logon = false;
+
+    let connected = connect_session(logoff_opts)?;
+    let active = drive_active_stage(DriveActiveOpts {
+        connected,
+        session_timeout: options.logoff_timeout,
+        settle: Duration::from_secs(5),
+        inject_command: Some("logoff".into()),
+        layer_label: "force-logoff-active-stage",
+        // Logoff should tear the session down; do not hold past terminate.
+        hold_after_inject: false,
+    })?;
+
+    let mut layers = active.layers;
+    layers.push("force-logoff-pass");
+    Ok(LogoffPassReport {
+        end_reason: active.end_reason,
+        elapsed_ms: active.elapsed_ms,
+        layers,
+    })
+}
+
+struct DriveActiveOpts {
+    connected: ConnectedSession,
+    session_timeout: Duration,
+    settle: Duration,
+    inject_command: Option<String>,
+    layer_label: &'static str,
+    hold_after_inject: bool,
+}
+
+struct ActiveDriveReport {
+    host: String,
+    port: u16,
+    remote_addr: String,
+    local_addr: String,
+    layers: Vec<&'static str>,
+    end_reason: ExecEndReason,
+    elapsed_ms: u64,
+    response_frames: u64,
+    injected: bool,
+    input_flags: u16,
+}
+
+fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
+    let DriveActiveOpts {
+        connected,
+        session_timeout,
+        settle,
+        inject_command,
+        layer_label,
+        hold_after_inject,
+    } = opts;
 
     let mut image = DecodedImage::new(
         PixelFormat::RgbA32,
@@ -318,8 +472,6 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     let desktop_width = connected.connection.desktop_size.width;
     let desktop_height = connected.connection.desktop_size.height;
     let mut framed = connected.framed;
-    // Tighten the post-connect read timeout so settle / Win+R injection can wake
-    // on quiet desktops without waiting the full handshake timeout.
     {
         let (stream, _) = framed.get_inner_mut();
         stream
@@ -331,19 +483,19 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
             .set_write_timeout(Some(Duration::from_secs(20)))
             .map_err(|error| Error::Session(error.to_string()))?;
     }
+
     let started = Instant::now();
     let mut response_frames = 0_u64;
     let mut layers = connected.layers;
-    layers.push("alternate-shell-active-stage");
+    layers.push(layer_label);
     let mut injected = false;
     let mut logon_seen = false;
-    let mut inject_at = if inject_run_dialog {
-        Some(started + settle)
+    let mut inject_at = inject_command.as_ref().map(|_| started + settle);
+    let mut hold_until = if hold_after_inject {
+        started + session_timeout
     } else {
-        None
+        started + settle + Duration::from_secs(15)
     };
-    // After Win+R injection, keep the session alive so the remote command can finish.
-    let mut hold_until = started + session_timeout;
 
     let end_reason = 'active: {
         loop {
@@ -352,56 +504,38 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
             }
 
             if let Some(deadline) = inject_at {
-                // Prefer injecting after logon evidence, otherwise at the settle deadline.
                 if logon_seen || Instant::now() >= deadline {
                     inject_at = None;
+                    let command = inject_command.as_deref().unwrap_or("");
                     if logon_seen {
-                        // Desktop focus can lag the logon PDU. Wait briefly, then click.
                         std::thread::sleep(Duration::from_secs(2));
                     }
-                    write_input_events(
+                    inject_run_dialog_command(
                         &mut active_stage,
                         &mut image,
                         &mut framed,
                         &mut response_frames,
-                        &build_focus_click_events(desktop_width / 2, desktop_height / 2),
-                    )?;
-                    std::thread::sleep(Duration::from_millis(400));
-                    write_input_events(
-                        &mut active_stage,
-                        &mut image,
-                        &mut framed,
-                        &mut response_frames,
-                        &build_run_dialog_events(),
+                        desktop_width,
+                        desktop_height,
+                        command,
                     )?;
                     injected = true;
-                    layers.push("win-r-keyboard-inject");
-                    // Give the Run dialog a moment to appear before characters arrive.
-                    std::thread::sleep(Duration::from_millis(900));
-                    write_input_events(
-                        &mut active_stage,
-                        &mut image,
-                        &mut framed,
-                        &mut response_frames,
-                        &build_unicode_type_events(&shell),
-                    )?;
-                    std::thread::sleep(Duration::from_millis(250));
-                    write_input_events(
-                        &mut active_stage,
-                        &mut image,
-                        &mut framed,
-                        &mut response_frames,
-                        &build_enter_events(),
-                    )?;
-                    hold_until = Instant::now() + (session_timeout / 2).max(Duration::from_secs(20));
+                    layers.push("win-r-scancode-inject");
+                    if hold_after_inject {
+                        hold_until =
+                            Instant::now() + (session_timeout / 2).max(Duration::from_secs(20));
+                    } else {
+                        // Expect logoff / short command to tear the session down soon.
+                        hold_until = Instant::now() + Duration::from_secs(20);
+                    }
                 }
             }
 
             let (action, payload) = match framed.read_pdu() {
                 Ok(frame) => frame,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock || error.kind() == io::ErrorKind::TimedOut => {
-                    // Keep waiting through settle / post-inject runtime instead of
-                    // treating the first quiet desktop as success.
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock || error.kind() == io::ErrorKind::TimedOut =>
+                {
                     if started.elapsed() >= session_timeout {
                         break 'active ExecEndReason::SessionTimeout;
                     }
@@ -446,28 +580,74 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
         }
     };
 
-    Ok(ExecReport {
-        ok: true,
+    Ok(ActiveDriveReport {
         host: connected.host,
         port: connected.port,
         remote_addr: connected.remote_addr.to_string(),
         local_addr: connected.local_addr.to_string(),
-        alternate_shell: truncate_for_report(&shell),
-        work_dir,
         layers,
         end_reason,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         response_frames,
-        injected_run_dialog: injected,
+        injected,
         input_flags,
-        notes: vec![
-            "IronRDP alternate_shell session completed.".into(),
-            "Payload delivery stays outside AlternateShell (512-byte wire cap). Use HTTP bootstrap or future RDPDR.".into(),
-            "Win+R keyboard injection covers hosts that reconnect a disconnected desktop and ignore AlternateShell.".into(),
-            "External RDP CLIs (mstsc / freerdp / wfreerdp) are not part of this path.".into(),
-            format!("endReason={end_reason:?} injectedRunDialog={injected} inputFlags={input_flags:#06x}"),
-        ],
     })
+}
+
+fn inject_run_dialog_command(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    framed: &mut Framed<StreamOwned<ClientConnection, TcpStream>>,
+    response_frames: &mut u64,
+    desktop_width: u16,
+    desktop_height: u16,
+    command: &str,
+) -> Result<()> {
+    write_input_events(
+        active_stage,
+        image,
+        framed,
+        response_frames,
+        &build_focus_click_events(desktop_width / 2, desktop_height / 2),
+    )?;
+    std::thread::sleep(Duration::from_millis(400));
+
+    // Open Run, clear any leftover text, type with US scancodes (more reliable than
+    // unicode-only bursts on some Windows hosts), then Enter.
+    write_input_events(
+        active_stage,
+        image,
+        framed,
+        response_frames,
+        &build_run_dialog_events(),
+    )?;
+    std::thread::sleep(Duration::from_millis(1000));
+    write_input_events(
+        active_stage,
+        image,
+        framed,
+        response_frames,
+        &build_select_all_events(),
+    )?;
+    std::thread::sleep(Duration::from_millis(120));
+    write_input_events(
+        active_stage,
+        image,
+        framed,
+        response_frames,
+        &build_backspace_events(),
+    )?;
+    std::thread::sleep(Duration::from_millis(120));
+    write_paced_type_events(active_stage, image, framed, response_frames, command)?;
+    std::thread::sleep(Duration::from_millis(300));
+    write_input_events(
+        active_stage,
+        image,
+        framed,
+        response_frames,
+        &build_enter_events(),
+    )?;
+    Ok(())
 }
 
 fn write_input_events(
@@ -527,11 +707,21 @@ fn build_run_dialog_events() -> Vec<FastPathInputEvent> {
     ]
 }
 
-fn build_unicode_type_events(text: &str) -> Vec<FastPathInputEvent> {
-    // Press-only unicode events; pairing RELEASE breaks typing on some hosts.
-    text.encode_utf16()
-        .map(|unit| FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit))
-        .collect()
+fn build_select_all_events() -> Vec<FastPathInputEvent> {
+    // Ctrl (0x1D) + A (0x1E).
+    vec![
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1D),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1E),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1E),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1D),
+    ]
+}
+
+fn build_backspace_events() -> Vec<FastPathInputEvent> {
+    vec![
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x0E),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x0E),
+    ]
 }
 
 fn build_enter_events() -> Vec<FastPathInputEvent> {
@@ -539,6 +729,100 @@ fn build_enter_events() -> Vec<FastPathInputEvent> {
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1C),
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1C),
     ]
+}
+
+/// US QWERTY set-1 scancode and whether Shift is required.
+fn us_scancode(ch: char) -> Option<(u8, bool)> {
+    match ch {
+        'a'..='z' => {
+            const MAP: [u8; 26] = [
+                0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10,
+                0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+            ];
+            Some((MAP[(ch as u8 - b'a') as usize], false))
+        }
+        'A'..='Z' => {
+            const MAP: [u8; 26] = [
+                0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10,
+                0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+            ];
+            Some((MAP[(ch as u8 - b'A') as usize], true))
+        }
+        '1'..='9' => Some((0x02 + (ch as u8 - b'1'), false)),
+        '0' => Some((0x0B, false)),
+        '!' => Some((0x02, true)),
+        '@' => Some((0x03, true)),
+        '#' => Some((0x04, true)),
+        '$' => Some((0x05, true)),
+        '%' => Some((0x06, true)),
+        '^' => Some((0x07, true)),
+        '&' => Some((0x08, true)),
+        '*' => Some((0x09, true)),
+        '(' => Some((0x0A, true)),
+        ')' => Some((0x0B, true)),
+        '-' => Some((0x0C, false)),
+        '_' => Some((0x0C, true)),
+        '=' => Some((0x0D, false)),
+        '+' => Some((0x0D, true)),
+        '[' => Some((0x1A, false)),
+        '{' => Some((0x1A, true)),
+        ']' => Some((0x1B, false)),
+        '}' => Some((0x1B, true)),
+        '\\' => Some((0x2B, false)),
+        '|' => Some((0x2B, true)),
+        ';' => Some((0x27, false)),
+        ':' => Some((0x27, true)),
+        '\'' => Some((0x28, false)),
+        '"' => Some((0x28, true)),
+        '`' => Some((0x29, false)),
+        '~' => Some((0x29, true)),
+        ',' => Some((0x33, false)),
+        '<' => Some((0x33, true)),
+        '.' => Some((0x34, false)),
+        '>' => Some((0x34, true)),
+        '/' => Some((0x35, false)),
+        '?' => Some((0x35, true)),
+        ' ' => Some((0x39, false)),
+        '\t' => Some((0x0F, false)),
+        _ => None,
+    }
+}
+
+fn build_char_events(ch: char) -> Vec<FastPathInputEvent> {
+    if let Some((code, shift)) = us_scancode(ch) {
+        let mut events = Vec::with_capacity(4);
+        if shift {
+            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2A));
+        }
+        events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), code));
+        events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, code));
+        if shift {
+            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2A));
+        }
+        return events;
+    }
+    // Fallback for characters outside the US scancode map.
+    let mut buf = [0_u16; 2];
+    ch.encode_utf16(&mut buf)
+        .iter()
+        .copied()
+        .map(|unit| FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit))
+        .collect()
+}
+
+fn write_paced_type_events(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    framed: &mut Framed<StreamOwned<ClientConnection, TcpStream>>,
+    response_frames: &mut u64,
+    text: &str,
+) -> Result<()> {
+    for ch in text.chars() {
+        write_input_events(active_stage, image, framed, response_frames, &build_char_events(ch))?;
+        // Pace keystrokes so the Run dialog can accept them without dropping.
+        std::thread::sleep(Duration::from_millis(35));
+    }
+    Ok(())
 }
 
 struct ConnectedSession {
