@@ -1,11 +1,27 @@
 {
+    "name": "@wae/open-panel-workspace",
     "private": true,
+    "type": "module",
+    "packageManager": "pnpm@10.28.0",
+    "description": "OpenPanel workspace: local ops panel with Rust crates, CLI, skills, and WebView / WebUI",
+    "license": "Apache-2.0",
+    "engines": {
+        "node": ">=22"
+    },
     "scripts": {
-        "doc": "cargo doc --no-deps --all-features",
-        "test": "cargo test --release",
-        "fmt": "cargo fmt --all",
-        "p": "git push && git push --tags --prune",
-        "reset": "git reset Head~ --soft",
-        "u": "cargo upgrade --workspace"
+        "build:napi": "node --experimental-strip-types scripts/build-napi.ts",
+        "build:ts": "pnpm --filter @wae/open-panel run build",
+        "build:ui": "pnpm --filter @wae/open-panel-ui run build",
+        "build": "pnpm run build:napi && pnpm run build:ts && pnpm run build:ui",
+        "stage:native": "node --experimental-strip-types scripts/stage-native.ts",
+        "check:skills": "node --experimental-strip-types scripts/check-skills.ts",
+        "check:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+        "gui": "pnpm run build && pnpm --filter @wae/open-panel exec node ./dist/cli.js gui",
+        "serve": "pnpm run build && pnpm --filter @wae/open-panel exec node ./dist/cli.js serve"
+    },
+    "devDependencies": {
+        "@doki-land/nifty": "^0.1.10",
+        "@types/node": "^22.20.4",
+        "typescript": "^5.9.2"
     }
 }

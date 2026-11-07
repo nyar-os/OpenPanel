@@ -1,0 +1,132 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      '@doki-land/nifty':
+        specifier: ^0.1.10
+        version: 0.1.11
+      '@types/node':
+        specifier: ^22.20.4
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/open-panel:
+    dependencies:
+      '@wae/commander':
+        specifier: 0.0.5
+        version: 0.0.5
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.4
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+    optionalDependencies:
+      '@wae/open-panel-win32-x64':
+        specifier: workspace:*
+        version: link:../open-panel-win32-x64
+
+  packages/open-panel-skills: {}
+
+  packages/open-panel-ui: {}
+
+  packages/open-panel-win32-x64: {}
+
+packages:
+
+  '@doki-land/nifty-darwin-arm64@0.1.11':
+    resolution: {integrity: sha512-4/yVyECQleIQqcAnaJWFmtsWft/xi2ByMOZCQVai7I7ap5BV92UTV3FmoRvAkNxsKzf+P18th/iJ9vqYLnaBHw==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@doki-land/nifty-darwin-x64@0.1.11':
+    resolution: {integrity: sha512-SjqDERjBVx1zePUsxNxrMygHI3CdhUWayjmoyEUcrAEBJSfk6RHvbXB8lvy0Vb0wowJfWb1OyQkMq40LGLAo/g==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@doki-land/nifty-linux-arm64@0.1.11':
+    resolution: {integrity: sha512-qx3lyzYuE6vf+2pIWM4uEqLbcOZVY6J63BT0cs598iziGHyqt44WBsxV2MzmsofDRZo/C7Qc8Uwf70XquTv3iA==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@doki-land/nifty-linux-x64@0.1.11':
+    resolution: {integrity: sha512-AJX8fVXohSEkhE73dtSDzizvgTZcE1/RCxgL6lUJhNhsX1U1l1lq5ryI3H9UUU/BvB2vVLj/BloItQfCF12TAg==}
+    cpu: [x64]
+    os: [linux]
+
+  '@doki-land/nifty-win32-x64@0.1.11':
+    resolution: {integrity: sha512-zFnHVYJGLTICQSKlvUL0P8SsgpF3uhP4RPzf1HRYtToZ6VNuXY/sxVPNROhbhF2+NFSEjXvuiXbGIxS0Zv0Hig==}
+    cpu: [x64]
+    os: [win32]
+
+  '@doki-land/nifty@0.1.11':
+    resolution: {integrity: sha512-3iDzkF5c2Qj92qgbOixpi1zNMZOv/DuPmyW2ZJJIo2wy9j0tXo6HLL/h+BuyoCWGoElhemL3B4o9PE4/OWODhQ==}
+    engines: {node: '>=24.12.0'}
+    hasBin: true
+
+  '@types/node@22.20.5':
+    resolution: {integrity: sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==}
+
+  '@vmz/commander@0.2.8':
+    resolution: {integrity: sha512-hDTOJGKHam1+GYnOJY8M0yqctrBt8RfdkvUVmkeu1LQVRyfWRZ8kqWnTdYcW8PoCWKP4DdDpcWJrbmI7rn68Bg==}
+    engines: {node: '>=20'}
+
+  '@wae/commander@0.0.5':
+    resolution: {integrity: sha512-L+xcfQZYbXvAmrBC52zSIZZqVokUkgLXeHxp6UWwXsJItQ/SH7oOgd6fMHrnKOHiB1h79wiAXtDX2dHW9KksUw==}
+    engines: {node: '>=20'}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  undici-types@6.21.0:
+    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
+snapshots:
+
+  '@doki-land/nifty-darwin-arm64@0.1.11':
+    optional: true
+
+  '@doki-land/nifty-darwin-x64@0.1.11':
+    optional: true
+
+  '@doki-land/nifty-linux-arm64@0.1.11':
+    optional: true
+
+  '@doki-land/nifty-linux-x64@0.1.11':
+    optional: true
+
+  '@doki-land/nifty-win32-x64@0.1.11':
+    optional: true
+
+  '@doki-land/nifty@0.1.11':
+    dependencies:
+      '@vmz/commander': 0.2.8
+    optionalDependencies:
+      '@doki-land/nifty-darwin-arm64': 0.1.11
+      '@doki-land/nifty-darwin-x64': 0.1.11
+      '@doki-land/nifty-linux-arm64': 0.1.11
+      '@doki-land/nifty-linux-x64': 0.1.11
+      '@doki-land/nifty-win32-x64': 0.1.11
+
+  '@types/node@22.20.5':
+    dependencies:
+      undici-types: 6.21.0
+
+  '@vmz/commander@0.2.8': {}
+
+  '@wae/commander@0.0.5': {}
+
+  typescript@5.9.3: {}
+
+  undici-types@6.21.0: {}

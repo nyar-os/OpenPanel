@@ -1,0 +1,15 @@
+{
+    "name": "@wae/open-panel-skills",
+    "version": "0.0.0",
+    "type": "module",
+    "description": "Agent skills for OpenPanel",
+    "files": [
+        "skills",
+        "Readme.md"
+    ],
+    "license": "Apache-2.0",
+    "engines": {
+        "node": ">=22"
+    },
+    "repository": "https://github.com/nyar-os/OpenPanel"
+}

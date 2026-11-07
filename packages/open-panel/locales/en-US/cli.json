@@ -1,0 +1,26 @@
+{
+    "cli": {
+        "intro": "open-panel — local ops panel for services, sites, processes, and logs. One installable with `gui` (desktop client) and `serve` (WebUI).",
+        "cmd": {
+            "capabilities": "Report domain capabilities and their availability",
+            "version": "Print the native addon version",
+            "audit": "Read audit records for the current actor",
+            "gui": "Open the desktop client GUI and pump host events until it closes",
+            "serve": "Start the local WebUI listener for browser access"
+        },
+        "opt": {
+            "actor": "Audit actor id (user or agent name)",
+            "actor-kind": "Audit actor kind",
+            "actor-source": "Audit actor source (cli, skill, gui, serve, ...)",
+            "json": "Emit machine-readable JSON on stdout",
+            "content-dir": "Directory containing the staged panel UI build",
+            "title": "Desktop window title",
+            "host": "WebUI listen host (default 127.0.0.1)",
+            "port": "WebUI listen port (default 17890)",
+            "kind": "Filter audit records by actor kind",
+            "id": "Filter audit records by actor id",
+            "capability": "Filter audit records by capability id",
+            "limit": "Maximum number of audit records"
+        }
+    }
+}

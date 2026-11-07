@@ -1,0 +1,36 @@
+{
+    "name": "@wae/open-panel",
+    "version": "0.0.0",
+    "description": "OpenPanel meta package: local ops panel CLI with desktop GUI and WebUI serve",
+    "license": "Apache-2.0",
+    "type": "module",
+    "engines": {
+        "node": ">=22"
+    },
+    "bin": {
+        "open-panel": "./dist/cli.js"
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": ["dist", "locales", "Readme.md", "License.md"],
+    "scripts": {
+        "build": "tsc -p tsconfig.json"
+    },
+    "dependencies": {
+        "@wae/commander": "0.0.5"
+    },
+    "optionalDependencies": {
+        "@wae/open-panel-win32-x64": "workspace:*"
+    },
+    "repository": "https://github.com/nyar-os/OpenPanel",
+    "devDependencies": {
+        "@types/node": "^22.20.4",
+        "typescript": "^5.9.2"
+    }
+}
