@@ -549,6 +549,7 @@ fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
     logoff_opts.force_fresh_logon = false;
     // Keep the logoff pass lean: RDPDR during tear-down races with session reset.
     logoff_opts.rdpdr_share_dir = None;
+    logoff_opts.rdpdr_ack_file = None;
 
     let mut layers = Vec::new();
     let mut last_end = ExecEndReason::SessionTimeout;
@@ -595,7 +596,21 @@ fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
                 });
             }
             Err(error) => {
-                breadcrumb(&format!("run_logoff_pass:active_soft_fail {error}"));
+                let message = error.to_string();
+                // Terminate mid-inject is the success signal for `shutdown /l`.
+                if message.contains("server terminate while draining")
+                    || is_transport_gone_msg(&message)
+                {
+                    return Ok(LogoffPassReport {
+                        end_reason: ExecEndReason::ServerTerminate,
+                        elapsed_ms: 0,
+                        layers: vec![
+                            "force-logoff-active-stage",
+                            "force-logoff-inject-terminate",
+                        ],
+                    });
+                }
+                breadcrumb(&format!("run_logoff_pass:active_soft_fail {message}"));
                 return Ok(LogoffPassReport {
                     end_reason: ExecEndReason::TransportClosed,
                     elapsed_ms: 0,
@@ -897,6 +912,7 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
         inject_command,
         layer_label,
         hold_after_inject,
+        rdpdr_ack_path,
     } = opts;
 
     breadcrumb(&format!(
@@ -946,6 +962,8 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
     layers.push(layer_label);
     let mut injected = false;
     let mut logon_seen = false;
+    let mut ack_seen = false;
+    let mut ack_preview = None;
     let mut inject_at = inject_command.as_ref().map(|_| started + settle);
     let mut hold_until = if hold_after_inject {
         started + session_timeout
@@ -958,6 +976,26 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
         loop {
             if started.elapsed() >= session_timeout {
                 break 'active ExecEndReason::SessionTimeout;
+            }
+            if let Some(ack_path) = rdpdr_ack_path.as_ref() {
+                if !ack_seen && ack_path.is_file() {
+                    if let Ok(body) = std::fs::read_to_string(ack_path) {
+                        let trimmed = body.trim();
+                        if !trimmed.is_empty() {
+                            ack_seen = true;
+                            layers.push("rdpdr-ack-seen");
+                            ack_preview = Some(trimmed.chars().take(120).collect());
+                            breadcrumb(&format!(
+                                "drive_active_stage:rdpdr_ack bytes={}",
+                                trimmed.len()
+                            ));
+                            // Keep RDPDR briefly so a detached installer can copy.
+                            hold_until = Instant::now() + Duration::from_secs(20);
+                        }
+                    }
+                } else if ack_seen && Instant::now() >= hold_until {
+                    break 'active ExecEndReason::ReadIdle;
+                }
             }
 
             if let Some(deadline) = inject_at {
@@ -1007,6 +1045,16 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                                 "drive_active_stage:inject_transport_gone hold={hold_after_inject}"
                             ));
                             break 'active ExecEndReason::TransportClosed;
+                        }
+                        Err(error)
+                            if error.to_string().contains("server terminate while draining") =>
+                        {
+                            // `shutdown /l` / `logoff` often terminates mid-keystroke drain.
+                            injected = true;
+                            layers.push("win-r-scancode-inject");
+                            layers.push("inject-server-terminate");
+                            breadcrumb("drive_active_stage:inject_server_terminate");
+                            break 'active ExecEndReason::ServerTerminate;
                         }
                         Err(error) => return Err(error),
                     }
@@ -1149,6 +1197,8 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
         response_frames,
         injected,
         input_flags,
+        rdpdr_ack_seen: ack_seen,
+        rdpdr_ack_preview: ack_preview,
     })
 }
 

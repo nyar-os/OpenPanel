@@ -13,7 +13,7 @@ use serde_json::Value;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> (--shell <cmd> | --shell-env <VAR>) [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--force-fresh-logon|--no-force-fresh-logon] [--inject-run]"
+        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> (--shell <cmd> | --shell-env <VAR>) [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--rdpdr-ack <name>] [--force-fresh-logon|--no-force-fresh-logon] [--inject-run|--no-inject-run]"
     );
     std::process::exit(2);
 }
@@ -232,11 +232,18 @@ fn main() -> ExitCode {
                 .unwrap_or("180")
                 .parse::<u64>()
                 .unwrap_or_else(|_| usage());
-            // Explicit flags from the TS fa?ade. Defaults OFF: force/inject ActiveStage has
-            // aborted lab clients (exit -1). Opt in with `--force-fresh-logon` / `--inject-run`.
-            let force_fresh_logon = has_flag(&args, "--force-fresh-logon");
-            let inject_run_dialog = has_flag(&args, "--inject-run");
+            // Defaults ON: force logoff then Win+R. Lab AlternateShell alone was silent.
+            // Opt out with `--no-force-fresh-logon` / `--no-inject-run`.
+            let force_fresh_logon = !has_flag(&args, "--no-force-fresh-logon");
+            let inject_run_dialog = !has_flag(&args, "--no-inject-run");
             let rdpdr_share_dir = arg_value(&args, "--rdpdr-dir").map(PathBuf::from);
+            let rdpdr_ack_file = arg_value(&args, "--rdpdr-ack")
+                .map(str::to_owned)
+                .or_else(|| {
+                    rdpdr_share_dir
+                        .as_ref()
+                        .map(|_| "op-ack.txt".to_owned())
+                });
 
             eprintln!(
                 "[open-panel-rdp] exec begin host={host} port={port} forceFresh={force_fresh_logon} inject={inject_run_dialog}"
@@ -262,6 +269,7 @@ fn main() -> ExitCode {
                     force_fresh_logon,
                     logoff_timeout: Duration::from_secs(25),
                     rdpdr_share_dir,
+                    rdpdr_ack_file,
                 })
             }));
 
