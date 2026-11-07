@@ -40,10 +40,11 @@ use ironrdp_connector::{
 };
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::gcc::{ConnectionType, KeyboardType};
+use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName as RustlsServerName, UnixTime};
 use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, Error as TlsError, SignatureScheme, StreamOwned};
@@ -134,6 +135,13 @@ pub struct RdpConnectOptions {
     pub timeout: Duration,
     /// How long to keep the active session after connect (install / shell lifetime).
     pub session_timeout: Duration,
+    /// After the desktop/session settles, also type the shell into Win+R.
+    ///
+    /// Windows often ignores `AlternateShell` when reconnecting a disconnected
+    /// session for the same user. Keyboard injection still runs the bootstrap.
+    pub inject_run_dialog: bool,
+    /// How long to wait for graphics / logon before Win+R injection.
+    pub settle: Duration,
 }
 
 impl Default for RdpConnectOptions {
@@ -151,6 +159,8 @@ impl Default for RdpConnectOptions {
             work_dir: String::new(),
             timeout: Duration::from_secs(20),
             session_timeout: Duration::from_secs(180),
+            inject_run_dialog: true,
+            settle: Duration::from_secs(4),
         }
     }
 }
@@ -223,6 +233,8 @@ pub struct ExecReport {
     pub elapsed_ms: u64,
     /// Number of ActiveStage response frames written back to the server.
     pub response_frames: u64,
+    /// Whether a Win+R keyboard injection of the shell was attempted.
+    pub injected_run_dialog: bool,
     /// Human notes / delivery reminders.
     pub notes: Vec<String>,
 }
@@ -269,11 +281,17 @@ pub fn handshake(options: RdpConnectOptions) -> Result<HandshakeReport> {
 ///
 /// The shell string must fit MS-RDPBCGR's 512-byte limit. Large payloads belong
 /// in a URL fetch or a future RDPDR stage, not in this field.
+///
+/// When `inject_run_dialog` is true (default), the same shell is also typed into
+/// the remote Win+R dialog after a short settle. That covers Windows hosts that
+/// reconnect a disconnected desktop and ignore AlternateShell.
 pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     validate_connect_options(&options, true)?;
     let shell = options.alternate_shell.clone();
     let work_dir = options.work_dir.clone();
     let session_timeout = options.session_timeout;
+    let settle = options.settle;
+    let inject_run_dialog = options.inject_run_dialog;
     let connected = connect_session(options)?;
 
     let mut image = DecodedImage::new(
@@ -294,10 +312,29 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     .build();
 
     let mut framed = connected.framed;
+    // Tighten the post-connect read timeout so settle / Win+R injection can wake
+    // on quiet desktops without waiting the full handshake timeout.
+    {
+        let (stream, _) = framed.get_inner_mut();
+        stream
+            .sock
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .map_err(|error| Error::Session(error.to_string()))?;
+        stream
+            .sock
+            .set_write_timeout(Some(Duration::from_secs(20)))
+            .map_err(|error| Error::Session(error.to_string()))?;
+    }
     let started = Instant::now();
     let mut response_frames = 0_u64;
     let mut layers = connected.layers;
     layers.push("alternate-shell-active-stage");
+    let mut injected = false;
+    let mut inject_at = if inject_run_dialog {
+        Some(started + settle)
+    } else {
+        None
+    };
 
     let end_reason = 'active: {
         loop {
@@ -305,9 +342,49 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
                 break 'active ExecEndReason::SessionTimeout;
             }
 
+            if let Some(deadline) = inject_at {
+                if Instant::now() >= deadline {
+                    inject_at = None;
+                    write_input_events(
+                        &mut active_stage,
+                        &mut image,
+                        &mut framed,
+                        &mut response_frames,
+                        &build_run_dialog_events(),
+                    )?;
+                    injected = true;
+                    layers.push("win-r-keyboard-inject");
+                    // Give the Run dialog a moment to appear before characters arrive.
+                    std::thread::sleep(Duration::from_millis(700));
+                    write_input_events(
+                        &mut active_stage,
+                        &mut image,
+                        &mut framed,
+                        &mut response_frames,
+                        &build_unicode_type_events(&shell),
+                    )?;
+                    std::thread::sleep(Duration::from_millis(200));
+                    write_input_events(
+                        &mut active_stage,
+                        &mut image,
+                        &mut framed,
+                        &mut response_frames,
+                        &build_enter_events(),
+                    )?;
+                }
+            }
+
             let (action, payload) = match framed.read_pdu() {
                 Ok(frame) => frame,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock || error.kind() == io::ErrorKind::TimedOut => {
+                    // Keep waiting through settle / post-inject runtime instead of
+                    // treating the first quiet desktop as success.
+                    if started.elapsed() >= session_timeout {
+                        break 'active ExecEndReason::SessionTimeout;
+                    }
+                    if inject_at.is_some() {
+                        continue;
+                    }
                     break 'active ExecEndReason::ReadIdle;
                 }
                 Err(error)
@@ -352,13 +429,65 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
         end_reason,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         response_frames,
+        injected_run_dialog: injected,
         notes: vec![
             "IronRDP alternate_shell session completed.".into(),
             "Payload delivery stays outside AlternateShell (512-byte wire cap). Use HTTP bootstrap or future RDPDR.".into(),
+            "Win+R keyboard injection covers hosts that reconnect a disconnected desktop and ignore AlternateShell.".into(),
             "External RDP CLIs (mstsc / freerdp / wfreerdp) are not part of this path.".into(),
-            format!("endReason={end_reason:?}"),
+            format!("endReason={end_reason:?} injectedRunDialog={injected}"),
         ],
     })
+}
+
+fn write_input_events(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    framed: &mut Framed<StreamOwned<ClientConnection, TcpStream>>,
+    response_frames: &mut u64,
+    events: &[FastPathInputEvent],
+) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let outputs = active_stage
+        .process_fastpath_input(image, events)
+        .map_err(|error| Error::Session(error.to_string()))?;
+    for out in outputs {
+        if let ActiveStageOutput::ResponseFrame(frame) = out {
+            framed
+                .write_all(&frame)
+                .map_err(|error| Error::Session(error.to_string()))?;
+            *response_frames += 1;
+        }
+    }
+    Ok(())
+}
+
+fn build_run_dialog_events() -> Vec<FastPathInputEvent> {
+    // Left Windows (extended 0x5B) + R (0x13).
+    vec![
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x5B),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x13),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x13),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x5B),
+    ]
+}
+
+fn build_unicode_type_events(text: &str) -> Vec<FastPathInputEvent> {
+    let mut events = Vec::with_capacity(text.encode_utf16().count() * 2);
+    for unit in text.encode_utf16() {
+        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit));
+        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, unit));
+    }
+    events
+}
+
+fn build_enter_events() -> Vec<FastPathInputEvent> {
+    vec![
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1C),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1C),
+    ]
 }
 
 struct ConnectedSession {
