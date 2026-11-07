@@ -1,8 +1,8 @@
-# OpenPanel remote install via jsDelivr (GitHub raw GET flaky in CN). Runs on the remote host only.
+# OpenPanel remote install via jsDelivr/GitHub (no file host). Runs on the remote host only.
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$ntfyTopic = "op-gh-raw-1107"
-$cdnBase = "https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@dev/scripts/remote"
+$ntfyTopic = "op-gh-raw-1107b"
+$rawBase = "https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@dev/scripts/remote"
 $tarballName = "wae-open-panel-0.0.0.tgz"
 $serverPort = 8888
 
@@ -17,7 +17,10 @@ try {
   New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
   $tarball = Join-Path $stageRoot $tarballName
   Write-OpNtfy "fetch"
-  Invoke-WebRequest -UseBasicParsing -UserAgent "Mozilla/5.0" -Uri ($cdnBase + "/" + $tarballName) -OutFile $tarball
+  & curl.exe -fsSL -m 120 -o $tarball ($rawBase + "/" + $tarballName)
+  if (-not (Test-Path -LiteralPath $tarball) -or (Get-Item -LiteralPath $tarball).Length -lt 1000) {
+    throw "tarball download failed or too small"
+  }
   Write-OpNtfy "fetched"
 
   function Ensure-OpenPanelNode {
@@ -28,7 +31,7 @@ try {
     $zip = Join-Path $stageRoot "$nodeName.zip"
     $nodeRoot = Join-Path $env:ProgramFiles "nodejs-open-panel"
     Write-OpNtfy "node-dl"
-    Invoke-WebRequest -UseBasicParsing -UserAgent "Mozilla/5.0" -Uri ("https://nodejs.org/dist/$nodeVer/$nodeName.zip") -OutFile $zip
+    & curl.exe -fsSL -m 300 -o $zip ("https://nodejs.org/dist/$nodeVer/$nodeName.zip")
     if (Test-Path $nodeRoot) { Remove-Item -LiteralPath $nodeRoot -Recurse -Force }
     Expand-Archive -LiteralPath $zip -DestinationPath $stageRoot -Force
     Move-Item -LiteralPath (Join-Path $stageRoot $nodeName) -Destination $nodeRoot
