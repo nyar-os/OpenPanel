@@ -1563,36 +1563,49 @@ fn us_scancode(ch: char) -> Option<(u8, bool)> {
     }
 }
 
+/// Path / shell punctuation that must not depend on the remote keyboard layout.
+fn inject_needs_unicode(ch: char) -> bool {
+    matches!(
+        ch,
+        '\\' | '/' | ':' | '>' | '<' | '|' | '&' | '%' | '"' | '\'' | '`' | '~' | '^'
+            | '*' | '?' | '{' | '}' | '[' | ']' | '=' | '+' | ';' | ','
+    )
+}
+
 /// How a single Win+R character will be encoded on the wire.
 fn inject_char_mode(ch: char) -> &'static str {
-    // Lab: Unicode-only path punctuation produced inject_done but zero RDPDR I/O.
-    // Prefer US scancodes for every mapped key (including `\`); Unicode is fallback.
-    if us_scancode(ch).is_some() {
-        "scan"
-    } else {
+    // Lab host is zh-CN: US set-1 scancodes for `\` / `:` type the wrong glyphs,
+    // so UNC paths never launch. Keep letters/digits on scancodes; force Unicode
+    // for path punctuation (with key-up) so `\\tsclient\OP\a.cmd` is literal.
+    if inject_needs_unicode(ch) || us_scancode(ch).is_none() {
         "uni"
+    } else {
+        "scan"
     }
 }
 
 fn build_char_events(ch: char) -> Vec<FastPathInputEvent> {
-    if let Some((code, shift)) = us_scancode(ch) {
-        let mut events = Vec::with_capacity(4);
-        if shift {
-            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2A));
+    if !inject_needs_unicode(ch) {
+        if let Some((code, shift)) = us_scancode(ch) {
+            let mut events = Vec::with_capacity(4);
+            if shift {
+                events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2A));
+            }
+            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), code));
+            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, code));
+            if shift {
+                events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2A));
+            }
+            return events;
         }
-        events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), code));
-        events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, code));
-        if shift {
-            events.push(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2A));
-        }
-        return events;
     }
     let mut buf = [0_u16; 2];
-    ch.encode_utf16(&mut buf)
-        .iter()
-        .copied()
-        .map(|unit| FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit))
-        .collect()
+    let mut events = Vec::with_capacity(4);
+    for unit in ch.encode_utf16(&mut buf).iter().copied() {
+        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit));
+        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, unit));
+    }
+    events
 }
 
 fn write_paced_type_events(
