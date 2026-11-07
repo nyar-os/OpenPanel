@@ -203,10 +203,12 @@ impl Default for RdpConnectOptions {
             work_dir: String::new(),
             timeout: Duration::from_secs(20),
             session_timeout: Duration::from_secs(180),
-            inject_run_dialog: true,
+            // Win+R / ActiveStage graphics abort on lab hosts; AlternateShell is the
+            // default delivery after force_fresh_logon.
+            inject_run_dialog: false,
             settle: Duration::from_secs(12),
-            // Default off: repeated logoff/reconnect has RST'd CredSSP (10054) on
-            // the lab host. Callers can still opt in. Win+R works without it.
+            // Default on so disconnected single-user sessions cannot swallow
+            // Client Info AlternateShell. Opt out via CLI `--no-force-fresh-logon`.
             force_fresh_logon: true,
             logoff_timeout: Duration::from_secs(45),
             rdpdr_share_dir: None,
@@ -619,12 +621,11 @@ fn connect_session_with_retry(options: RdpConnectOptions, after_logoff: bool) ->
     Err(last_error.unwrap_or_else(|| Error::Session("post-logoff reconnect failed".into())))
 }
 
-/// Keep the RDP transport open without ActiveStage and without `read_pdu`.
+/// Sleep with the RDP socket held. Do not call ActiveStage or `read_pdu`.
 ///
-/// Lab hosts abort inside IronRDP FastPath parse (native AV, empty stdout) even
-/// when PDUs are only drained. `AlternateShell` already started at Client Info —
-/// sleep with the socket held so a detached bootstrap (`Start-Process`) can
-/// begin before we drop the session.
+/// Lab hosts abort inside IronRDP FastPath parse (native AV, empty stdout).
+/// `AlternateShell` already started at Client Info — keep the session up so a
+/// detached bootstrap (`Start-Process` + RDPDR copy) can finish staging.
 fn hold_transport_without_graphics(
     connected: ConnectedSession,
     session_timeout: Duration,
@@ -637,10 +638,18 @@ fn hold_transport_without_graphics(
     layers.push(layer_label);
     layers.push("hold-sleep-only");
 
-    // Install bootstraps should Start-Process quickly; keep a bounded silent hold.
     let hold = session_timeout.min(Duration::from_secs(90));
     breadcrumb(&format!("hold_transport:sleep_begin secs={}", hold.as_secs()));
-    std::thread::sleep(hold);
+    let mut remaining = hold;
+    while !remaining.is_zero() {
+        let slice = remaining.min(Duration::from_secs(5));
+        std::thread::sleep(slice);
+        remaining = remaining.saturating_sub(slice);
+        breadcrumb(&format!(
+            "hold_transport:sleep_tick left_secs={}",
+            remaining.as_secs()
+        ));
+    }
     breadcrumb("hold_transport:sleep_done");
 
     let _keep_alive = connected.framed;
