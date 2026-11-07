@@ -15,11 +15,13 @@ pub mod config;
 mod error;
 pub mod native_service;
 pub mod platform;
+pub mod web_site;
 
 pub use audit::capability_ids;
 pub use error::{CapabilityState, Error, ErrorPayload, Result, capability_code};
 pub use native_service::{NativeServiceBackend, NativeServiceInfo, NativeServiceState};
 pub use platform::{Capabilities, Capability, Platform, capabilities, platform_arch, platform_name};
+pub use web_site::{WebSiteInput, WebSiteKind, WebSiteManager, WebSiteView};
 
 /// Optional ACME SSL helpers (`auto-ssl` crate) for `open-panel server` site certificates.
 #[cfg(feature = "auto-ssl")]

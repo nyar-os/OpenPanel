@@ -833,6 +833,8 @@ version = "0.0.0"
 dependencies = [
  "auto-ssl",
  "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
  "windows-sys 0.59.0",
 ]

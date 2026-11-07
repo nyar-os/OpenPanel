@@ -97,24 +97,16 @@ pub struct Capabilities {
 ///
 /// Desktop client host capabilities stay under `gui-*`. `server` is the
 /// in-process WebUI listener owned by the TypeScript meta package (same
-/// installable). Service / site / process panel domains stay `not_implemented`
-/// in this skeleton.
+/// installable). Native OS services are Windows SCM first. Web sites use
+/// OpenPanel-hosted static listeners (not Node/Python app runtimes).
 pub fn capabilities() -> Capabilities {
     let mut items = vec![
         Capability::available(capability_ids::GUI_OPEN),
         Capability::available(capability_ids::GUI_PUMP),
         Capability::available(capability_ids::GUI_CLOSE),
         Capability::available(capability_ids::SERVER),
-        Capability::unavailable(
-            capability_ids::SERVICES,
-            CapabilityState::NotImplemented,
-            "local service inventory is not implemented in this skeleton",
-        ),
-        Capability::unavailable(
-            capability_ids::SITES,
-            CapabilityState::NotImplemented,
-            "local site inventory is not implemented in this skeleton",
-        ),
+        services_capability(),
+        Capability::available(capability_ids::SITES),
         Capability::unavailable(
             capability_ids::AUTO_SSL,
             CapabilityState::NotImplemented,
@@ -144,7 +136,22 @@ pub fn capabilities() -> Capabilities {
         notes: vec![
             "one installable `@wae/open-panel`: `client` opens `@wae/open-panel-gui` and `server` hosts `@wae/open-panel-webui`".to_string(),
             "OpenPanel is a local ops panel (services / sites / processes / logs), not an API gateway".to_string(),
+            "web sites use OpenPanel-hosted static listeners (`kind=static-host`), not IIS/Nginx config generation yet".to_string(),
+            "Node/Python/Java application runtime hosting is deferred".to_string(),
         ],
+    }
+}
+
+fn services_capability() -> Capability {
+    if Platform::current() == Platform::Windows {
+        Capability::available(capability_ids::SERVICES)
+    }
+    else {
+        Capability::unavailable(
+            capability_ids::SERVICES,
+            CapabilityState::UnsupportedPlatform,
+            "native OS service control is Windows SCM only in this release (Linux systemd stub later)",
+        )
     }
 }
 
@@ -158,5 +165,16 @@ mod tests {
         let ids: Vec<_> = report.items.iter().map(|item| item.id.as_str()).collect();
         assert!(ids.contains(&capability_ids::GUI_OPEN));
         assert!(ids.contains(&capability_ids::SERVER));
+        assert!(ids.contains(&capability_ids::SITES));
+        assert!(ids.contains(&capability_ids::SERVICES));
+        let sites = report.items.iter().find(|item| item.id == capability_ids::SITES).unwrap();
+        assert!(sites.state.is_none());
+        let services = report.items.iter().find(|item| item.id == capability_ids::SERVICES).unwrap();
+        if Platform::current() == Platform::Windows {
+            assert!(services.state.is_none());
+        }
+        else {
+            assert_eq!(services.state, Some(CapabilityState::UnsupportedPlatform));
+        }
     }
 }
