@@ -16,9 +16,11 @@ use wae::{
 };
 
 mod audit;
+mod ops;
 mod roster;
 
 use audit::Summary;
+use ops::*;
 use wae::audit::Mode;
 
 const APP_TITLE: &str = "OpenPanel";
@@ -66,7 +68,7 @@ fn reply(value: Value) -> String {
     value.to_string()
 }
 
-fn core_error(error: CoreError) -> Error {
+pub(crate) fn core_error(error: CoreError) -> Error {
     let payload =
         serde_json::to_string(&error.payload()).unwrap_or_else(|_| "{\"code\":\"message\",\"message\":\"encode failed\"}".to_string());
     Error::new(format!("wae.error:{payload}"))
@@ -76,7 +78,7 @@ fn webview_error(error: WebViewError) -> CoreError {
     CoreError::message(error.to_string())
 }
 
-fn json_to_js(env: wae::Env, value: Value) -> Result<JsValue> {
+pub(crate) fn json_to_js(env: wae::Env, value: Value) -> Result<JsValue> {
     match value {
         Value::Null => env.null(),
         Value::Bool(flag) => env.boolean(flag),
@@ -109,16 +111,16 @@ fn json_to_js(env: wae::Env, value: Value) -> Result<JsValue> {
     }
 }
 
-fn value_to_js<T: serde::Serialize>(ctx: &CallContext, value: &T) -> Result<JsValue> {
+pub(crate) fn value_to_js<T: serde::Serialize>(ctx: &CallContext, value: &T) -> Result<JsValue> {
     let json = serde_json::to_value(value).map_err(|error| Error::new(error.to_string()))?;
     json_to_js(ctx.env(), json)
 }
 
-fn object_arg(ctx: &CallContext) -> Result<Option<JsValue>> {
+pub(crate) fn object_arg(ctx: &CallContext) -> Result<Option<JsValue>> {
     Ok(ctx.args().first().copied())
 }
 
-fn optional_string(obj: Option<JsValue>, name: &str) -> Result<Option<String>> {
+pub(crate) fn optional_string(obj: Option<JsValue>, name: &str) -> Result<Option<String>> {
     Ok(obj.and_then(|obj| optional_string_prop(obj, name).ok().flatten()))
 }
 
@@ -347,4 +349,26 @@ fn audit_query(ctx: CallContext) -> Result<JsValue> {
     }
 }
 
-register_module![version, build_info, capabilities, platform, open_gui, pump_events, close_gui, is_gui_open, configure_audit, audit_query];
+register_module![
+    version,
+    build_info,
+    capabilities,
+    platform,
+    open_gui,
+    pump_events,
+    close_gui,
+    is_gui_open,
+    configure_audit,
+    audit_query,
+    list_native_services,
+    native_service_status,
+    start_native_service,
+    stop_native_service,
+    restart_native_service,
+    list_web_sites,
+    upsert_web_site,
+    remove_web_site,
+    set_web_site_enabled,
+    start_web_site,
+    stop_web_site
+];
