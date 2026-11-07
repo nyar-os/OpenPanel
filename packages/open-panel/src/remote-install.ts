@@ -16,7 +16,7 @@ import { packOpenPanel, passwordFromEnv } from './remote-pack.js';
 import { probeRemoteHost, type RemoteChannel, type RemoteProbeReport } from './remote-probe.js';
 import {
     buildAlternateShellBootstrap,
-    buildRdpdrProofCmdShell,
+    buildRdpdrInstallCmdShell,
     defaultWorkDir,
     prepareRdpdrStageDir,
     RDPDR_ACK_FILE,
@@ -184,11 +184,12 @@ async function installOneWindows(
                 skipStart: target.skipStart,
             });
             rdpdrDir = rdpdrStage.dir;
-            // Short Win+R target: `\\tsclient\OP\a.cmd` (proof + optional install start).
-            shell = buildRdpdrProofCmdShell();
+            // Inline AlternateShell: sleep, Public proof, RDPDR ack, then start i.ps1.
+            // Do not launch `\\tsclient\OP\*.cmd` as the shell itself (redirect race).
+            shell = buildRdpdrInstallCmdShell();
             stageInfo = {
                 baseUrl: `\\\\tsclient\\OP`,
-                scriptUrl: `\\\\tsclient\\OP\\a.cmd`,
+                scriptUrl: `\\\\tsclient\\OP\\i.ps1`,
                 tarballUrl: `\\\\tsclient\\OP\\${rdpdrStage.tarballName}`,
             };
         }
@@ -202,10 +203,10 @@ async function installOneWindows(
             sessionTimeoutSecs,
             rdpdrDir,
             rdpdrAckFile: RDPDR_ACK_FILE,
-            // Force-fresh via Win+R `shutdown /l`, then Win+R `\\tsclient\OP\a.cmd`.
-            // Soft AlternateShell logoff alone leaves reconnects ignoring Client Info.
+            // Win+R `shutdown /l` for real logoff, then Client Info AlternateShell
+            // carries the inline proof/install cmd (inject would clear AlternateShell).
             forceFreshLogon: true,
-            injectRun: true,
+            injectRun: false,
         });
 
         if (!exec.ok) {
