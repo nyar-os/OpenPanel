@@ -3,15 +3,17 @@
 //! Password must come from the environment (`--password-env`), never argv.
 
 use std::env;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use open_panel_rdp::{RdpAuth, RdpConnectOptions, handshake, probe_tcp, run_alternate_shell};
+use serde_json::Value;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> --shell <cmd> [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--no-force-fresh-logon] [--no-inject-run]"
+        "usage:\n  open-panel-rdp probe --host <host> [--port 3389]\n  open-panel-rdp handshake --host <host> --user <name> --password-env <VAR> [--port 3389] [--domain <name>]\n  open-panel-rdp exec --host <host> --user <name> --password-env <VAR> (--shell <cmd> | --shell-env <VAR>) [--work-dir <path>] [--port 3389] [--domain <name>] [--session-timeout-secs <n>] [--rdpdr-dir <path>] [--no-force-fresh-logon] [--inject-run]"
     );
     std::process::exit(2);
 }
@@ -24,18 +26,75 @@ fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.windows(2).find_map(|pair| (pair[0] == name).then_some(pair[1].as_str()))
 }
 
+fn emit_json(value: &Value) {
+    println!("{value}");
+    let _ = io::stdout().flush();
+}
+
+fn emit_pretty(value: &impl serde::Serialize) {
+    match serde_json::to_string_pretty(value) {
+        Ok(text) => {
+            println!("{text}");
+            let _ = io::stdout().flush();
+        }
+        Err(error) => {
+            emit_json(&serde_json::json!({
+                "ok": false,
+                "error": format!("failed to serialize report: {error}"),
+                "stack": "open-panel-rdp (IronRDP)",
+            }));
+        }
+    }
+}
+
 fn password_from_env(password_env: &str) -> Result<String, ExitCode> {
     match env::var(password_env) {
         Ok(value) if !value.is_empty() => Ok(value),
         _ => {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": false,
-                    "error": format!("environment variable `{password_env}` is empty or unset"),
-                })
-            );
+            emit_json(&serde_json::json!({
+                "ok": false,
+                "error": format!("environment variable `{password_env}` is empty or unset"),
+            }));
             Err(ExitCode::from(2))
+        }
+    }
+}
+
+/// Resolve the AlternateShell / Win+R payload from `--shell` or `--shell-env`.
+/// Prefer `--shell-env` on Windows hosts where argv quoting mangles spaces/quotes.
+fn shell_from_args(args: &[String]) -> Result<String, ExitCode> {
+    let shell_flag = arg_value(args, "--shell").map(str::to_owned);
+    let shell_env = arg_value(args, "--shell-env");
+    match (shell_flag, shell_env) {
+        (Some(_), Some(_)) => {
+            emit_json(&serde_json::json!({
+                "ok": false,
+                "error": "pass either `--shell` or `--shell-env`, not both",
+            }));
+            Err(ExitCode::from(2))
+        }
+        (Some(shell), None) => {
+            if shell.trim().is_empty() {
+                emit_json(&serde_json::json!({
+                    "ok": false,
+                    "error": "`--shell` must not be empty",
+                }));
+                return Err(ExitCode::from(2));
+            }
+            Ok(shell)
+        }
+        (None, Some(var)) => match env::var(var) {
+            Ok(value) if !value.trim().is_empty() => Ok(value),
+            _ => {
+                emit_json(&serde_json::json!({
+                    "ok": false,
+                    "error": format!("environment variable `{var}` is empty or unset"),
+                }));
+                Err(ExitCode::from(2))
+            }
+        },
+        (None, None) => {
+            usage();
         }
     }
 }
@@ -53,6 +112,14 @@ fn auth_options(args: &[String]) -> Result<(String, String, u16, Option<String>,
     Ok((host, user, port, domain, password))
 }
 
+fn panic_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|value| (*value).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".into())
+}
+
 fn main() -> ExitCode {
     // Always emit JSON on panic so Node façades never see an empty stdout crash.
     std::panic::set_hook(Box::new(|info| {
@@ -62,14 +129,16 @@ fn main() -> ExitCode {
             .map(|value| (*value).to_owned())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| info.to_string());
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": false,
-                "error": format!("open-panel-rdp panicked: {message}"),
-                "stack": "open-panel-rdp (IronRDP)",
-            })
-        );
+        // Write both streams: some hosts only keep one of the redirected pipes.
+        let body = serde_json::json!({
+            "ok": false,
+            "error": format!("open-panel-rdp panicked: {message}"),
+            "stack": "open-panel-rdp (IronRDP)",
+        });
+        println!("{body}");
+        let _ = io::stdout().flush();
+        eprintln!("{body}");
+        let _ = io::stderr().flush();
     }));
 
     let args: Vec<String> = env::args().skip(1).collect();
@@ -86,21 +155,18 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|_| usage());
             match probe_tcp(host, port, Duration::from_secs(5)) {
                 Ok(addr) => {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "ok": true,
-                            "host": host,
-                            "port": port,
-                            "remoteAddr": addr.to_string(),
-                            "channel": "rdp",
-                            "stack": "open-panel-rdp (IronRDP)",
-                        })
-                    );
+                    emit_json(&serde_json::json!({
+                        "ok": true,
+                        "host": host,
+                        "port": port,
+                        "remoteAddr": addr.to_string(),
+                        "channel": "rdp",
+                        "stack": "open-panel-rdp (IronRDP)",
+                    }));
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
-                    println!("{}", serde_json::json!({ "ok": false, "error": error.to_string() }));
+                    emit_json(&serde_json::json!({ "ok": false, "error": error.to_string() }));
                     ExitCode::from(1)
                 }
             }
@@ -111,34 +177,43 @@ fn main() -> ExitCode {
                 Err(code) => return code,
             };
 
-            let report = handshake(RdpConnectOptions {
-                host: host.clone(),
-                port,
-                auth: RdpAuth {
-                    username: user,
-                    password,
-                    domain,
-                },
-                accept_invalid_certs: true,
-                ..RdpConnectOptions::default()
-            });
+            let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handshake(RdpConnectOptions {
+                    host: host.clone(),
+                    port,
+                    auth: RdpAuth {
+                        username: user,
+                        password,
+                        domain,
+                    },
+                    accept_invalid_certs: true,
+                    ..RdpConnectOptions::default()
+                })
+            }));
 
             match report {
-                Ok(value) => {
-                    println!("{}", serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into()));
+                Ok(Ok(value)) => {
+                    emit_pretty(&value);
                     ExitCode::SUCCESS
                 }
-                Err(error) => {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "ok": false,
-                            "host": host,
-                            "port": port,
-                            "error": error.to_string(),
-                            "stack": "open-panel-rdp (IronRDP)",
-                        })
-                    );
+                Ok(Err(error)) => {
+                    emit_json(&serde_json::json!({
+                        "ok": false,
+                        "host": host,
+                        "port": port,
+                        "error": error.to_string(),
+                        "stack": "open-panel-rdp (IronRDP)",
+                    }));
+                    ExitCode::from(1)
+                }
+                Err(panic) => {
+                    emit_json(&serde_json::json!({
+                        "ok": false,
+                        "host": host,
+                        "port": port,
+                        "error": format!("open-panel-rdp panicked: {}", panic_to_string(&panic)),
+                        "stack": "open-panel-rdp (IronRDP)",
+                    }));
                     ExitCode::from(1)
                 }
             }
@@ -148,52 +223,79 @@ fn main() -> ExitCode {
                 Ok(value) => value,
                 Err(code) => return code,
             };
-            let shell = arg_value(&args, "--shell").unwrap_or_else(|| usage()).to_owned();
+            let shell = match shell_from_args(&args) {
+                Ok(value) => value,
+                Err(code) => return code,
+            };
             let work_dir = arg_value(&args, "--work-dir").unwrap_or("").to_owned();
             let session_timeout_secs = arg_value(&args, "--session-timeout-secs")
                 .unwrap_or("180")
                 .parse::<u64>()
                 .unwrap_or_else(|_| usage());
-            let force_fresh_logon = !has_flag(&args, "--no-force-fresh-logon");
-            let inject_run_dialog = !has_flag(&args, "--no-inject-run");
+            // Defaults for the install path on lab hosts:
+            // - no force-logoff (CredSSP/finalization of `logoff` has aborted the client)
+            // - no Win+R inject (ActiveStage graphics decode has aborted the client)
+            // Payload rides Client Info AlternateShell; hold drains PDUs only.
+            // Opt in with `--force-fresh-logon` / `--inject-run` when debugging.
+            let force_fresh_logon = has_flag(&args, "--force-fresh-logon");
+            let inject_run_dialog = has_flag(&args, "--inject-run");
             let rdpdr_share_dir = arg_value(&args, "--rdpdr-dir").map(PathBuf::from);
 
-            let report = run_alternate_shell(RdpConnectOptions {
-                host: host.clone(),
-                port,
-                auth: RdpAuth {
-                    username: user,
-                    password,
-                    domain,
-                },
-                accept_invalid_certs: true,
-                alternate_shell: shell,
-                work_dir,
-                timeout: Duration::from_secs(20),
-                session_timeout: Duration::from_secs(session_timeout_secs),
-                inject_run_dialog,
-                settle: Duration::from_secs(12),
-                force_fresh_logon,
-                logoff_timeout: Duration::from_secs(45),
-                rdpdr_share_dir,
-            });
+            eprintln!(
+                "[open-panel-rdp] exec begin host={host} port={port} forceFresh={force_fresh_logon} inject={inject_run_dialog}"
+            );
+            let _ = io::stderr().flush();
+
+            let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_alternate_shell(RdpConnectOptions {
+                    host: host.clone(),
+                    port,
+                    auth: RdpAuth {
+                        username: user,
+                        password,
+                        domain,
+                    },
+                    accept_invalid_certs: true,
+                    alternate_shell: shell,
+                    work_dir,
+                    timeout: Duration::from_secs(20),
+                    session_timeout: Duration::from_secs(session_timeout_secs),
+                    inject_run_dialog,
+                    settle: Duration::from_secs(8),
+                    force_fresh_logon,
+                    logoff_timeout: Duration::from_secs(25),
+                    rdpdr_share_dir,
+                })
+            }));
 
             match report {
-                Ok(value) => {
-                    println!("{}", serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into()));
-                    ExitCode::SUCCESS
+                Ok(Ok(value)) => {
+                    // Non-delivered Win+R sessions still return a report with ok=false.
+                    emit_pretty(&value);
+                    if value.ok {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(1)
+                    }
                 }
-                Err(error) => {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "ok": false,
-                            "host": host,
-                            "port": port,
-                            "error": error.to_string(),
-                            "stack": "open-panel-rdp (IronRDP)",
-                        })
-                    );
+                Ok(Err(error)) => {
+                    emit_json(&serde_json::json!({
+                        "ok": false,
+                        "host": host,
+                        "port": port,
+                        "error": error.to_string(),
+                        "stack": "open-panel-rdp (IronRDP)",
+                    }));
+                    ExitCode::from(1)
+                }
+                Err(panic) => {
+                    emit_json(&serde_json::json!({
+                        "ok": false,
+                        "host": host,
+                        "port": port,
+                        "error": format!("open-panel-rdp panicked: {}", panic_to_string(&panic)),
+                        "stack": "open-panel-rdp (IronRDP)",
+                    }));
                     ExitCode::from(1)
                 }
             }
