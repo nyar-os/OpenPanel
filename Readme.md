@@ -67,6 +67,38 @@ pnpm --filter @wae/open-panel exec node ./dist/cli.js client
 
 平台支持：首发 `win32-x64`。其它平台在未发布对应平台包前视为不支持。
 
+## npm 占位（0.0.0）与真实发布
+
+发布集合（非 `private`）：
+
+| 包 | 说明 |
+|----|------|
+| `@wae/open-panel-win32-x64` | Windows x64 原生平台包（先发） |
+| `@wae/open-panel-skills` | Agent skills |
+| `@wae/open-panel` | 元包 / CLI |
+
+`@wae/open-panel-gui` 与 `@wae/open-panel-webui` 为 `private`，不进 registry。
+
+**`0.0.0` 占位**是硬规则允许的唯一本地 npm 发布例外（领取包名 + 配置 Trusted Publisher）。真实 semver 只能经 GitHub Actions OIDC（`.github/workflows/publish-npm.yml`，`environment: NPM_PUBLISH`），禁止本地 `npm publish` / `pnpm publish` / token 旁路。
+
+```bash
+# 1) 构建可打包产物（平台包需要 .node；元包需要 dist）
+pnpm install
+pnpm run build
+
+# 2) 干跑，确认顺序与跳过的 private 包
+pnpm placeholder
+
+# 3) 本地发 0.0.0 占位（需 npm 登录或 .env.placeholder.local）
+pnpm placeholder:publish
+
+# 4) 配置 Trusted Publisher（指向本仓 publish-npm.yml / NPM_PUBLISH）
+#    先在 GitHub 建好 environment: NPM_PUBLISH
+pnpm placeholder:trust
+```
+
+真实版本：在 `dev` 上 bump 后打 tag `vX.Y.Z` 并 push tag（或经授权的 `workflow_dispatch`），由 OIDC workflow 发布。细节见 `scripts/README.md`。
+
 ## License
 
 Apache-2.0. See `License.md`.
