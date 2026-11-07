@@ -68,14 +68,18 @@ use ironrdp_connector::sspi::network_client::reqwest_network_client::ReqwestNetw
 use ironrdp_connector::{
     ClientConnector, ConnectionOutcome, ConnectionResult, Credentials, DesktopSize, ServerName,
 };
+use ironrdp_core::encode_vec;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::gcc::{ConnectionType, KeyboardType};
 use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
 use ironrdp_pdu::input::{MousePdu, mouse::PointerFlags};
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp_rdpdr::pdu::RdpdrPdu;
+use ironrdp_rdpdr::Rdpdr;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
+use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName as RustlsServerName, UnixTime};
 use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, Error as TlsError, SignatureScheme, StreamOwned};
@@ -1011,12 +1015,21 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
     let mut frames_seen = 0_u64;
 
     let waiting_ack = rdpdr_ack_path.is_some();
+    let mut rdpdr_drives_announced = false;
     let end_reason = 'active: {
         loop {
             // When an RDPDR ack is expected, do not cut the session on the original
             // session_timeout during/after inject — typing + remote copy needs room.
             if !waiting_ack && started.elapsed() >= session_timeout {
                 break 'active ExecEndReason::SessionTimeout;
+            }
+            if let Err(error) = poll_rdpdr_deferred(&mut active_stage, &mut framed, &mut response_frames)
+            {
+                let message = error.to_string();
+                if is_transport_gone_msg(&message) {
+                    break 'active ExecEndReason::TransportClosed;
+                }
+                breadcrumb(&format!("drive_active_stage:rdpdr_deferred_err {message}"));
             }
             if waiting_ack && inject_at.is_none() && Instant::now() >= hold_until {
                 break 'active if ack_seen {
@@ -1053,8 +1066,11 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     if logon_seen {
                         // Keep this short: lab peers RST/terminate ~7s of idle
                         // after logon (12s RDPDR settle never reached inject_begin).
-                        // `a.cmd` itself waits for `\\tsclient` after launch.
-                        let pause = if hold_after_inject {
+                        // After synthesizing UserLoggedon, give the server a moment
+                        // to accept `OP` before Win+R opens `\\tsclient\OP\a.cmd`.
+                        let pause = if waiting_ack {
+                            Duration::from_millis(3500)
+                        } else if hold_after_inject {
                             Duration::from_millis(1500)
                         } else {
                             Duration::from_millis(800)
@@ -1063,8 +1079,31 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                             "drive_active_stage:pre_inject_settle ms={}",
                             pause.as_millis()
                         ));
+                        if waiting_ack && !rdpdr_drives_announced {
+                            match announce_rdpdr_drives_after_logon(
+                                &mut active_stage,
+                                &mut framed,
+                                &mut response_frames,
+                            ) {
+                                Ok(true) => {
+                                    rdpdr_drives_announced = true;
+                                    layers.push("rdpdr-user-loggedon-synth");
+                                }
+                                Ok(false) => {}
+                                Err(error) => {
+                                    breadcrumb(&format!(
+                                        "drive_active_stage:rdpdr_announce_retry_err {error}"
+                                    ));
+                                }
+                            }
+                        }
                         let until = Instant::now() + pause;
                         while Instant::now() < until {
+                            let _ = poll_rdpdr_deferred(
+                                &mut active_stage,
+                                &mut framed,
+                                &mut response_frames,
+                            );
                             if let Err(error) = drain_incoming_pdus(
                                 &mut active_stage,
                                 &mut image,
@@ -1283,6 +1322,24 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                             logon_seen = true;
                             layers.push("save-session-info-logon");
                             breadcrumb("drive_active_stage:logon_complete");
+                            if !rdpdr_drives_announced {
+                                match announce_rdpdr_drives_after_logon(
+                                    &mut active_stage,
+                                    &mut framed,
+                                    &mut response_frames,
+                                ) {
+                                    Ok(true) => {
+                                        rdpdr_drives_announced = true;
+                                        layers.push("rdpdr-user-loggedon-synth");
+                                    }
+                                    Ok(false) => {}
+                                    Err(error) => {
+                                        breadcrumb(&format!(
+                                            "drive_active_stage:rdpdr_announce_err {error}"
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
                     ActiveStageOutput::Terminate(_) => {
@@ -1652,6 +1709,92 @@ fn write_paced_type_events(
             drain_incoming_pdus(active_stage, image, framed, response_frames)?;
         }
     }
+    Ok(())
+}
+
+/// Flush RDPDR SVC messages onto the wire.
+fn write_rdpdr_messages(
+    active_stage: &mut ActiveStage,
+    framed: &mut Framed<StreamOwned<ClientConnection, TcpStream>>,
+    response_frames: &mut u64,
+    messages: Vec<SvcMessage>,
+    label: &str,
+) -> Result<bool> {
+    if messages.is_empty() {
+        return Ok(false);
+    }
+    let frame = active_stage
+        .process_svc_processor_messages::<Rdpdr>(SvcProcessorMessages::new(messages))
+        .map_err(|error| Error::Session(format!("encode RDPDR {label}: {error}")))?;
+    if frame.is_empty() {
+        breadcrumb(&format!("drive_active_stage:rdpdr_{label} encoded empty"));
+        return Ok(false);
+    }
+    framed
+        .write_all(&frame)
+        .map_err(|error| Error::Session(error.to_string()))?;
+    *response_frames += 1;
+    breadcrumb(&format!(
+        "drive_active_stage:rdpdr_{label} bytes={}",
+        frame.len()
+    ));
+    Ok(true)
+}
+
+/// Some Windows hosts never emit `PAKID_CORE_USER_LOGGEDON`, and others send
+/// `ClientIdConfirm` *after* SaveSessionInfo logon. IronRDP only announces
+/// filesystem drives after UserLoggedon once the client ID is confirmed, so
+/// `\\tsclient\OP` stays missing unless we synthesize / force the announce.
+fn announce_rdpdr_drives_after_logon(
+    active_stage: &mut ActiveStage,
+    framed: &mut Framed<StreamOwned<ClientConnection, TcpStream>>,
+    response_frames: &mut u64,
+) -> Result<bool> {
+    let Some(rdpdr) = active_stage.get_svc_processor_mut::<Rdpdr>() else {
+        return Ok(false);
+    };
+    let payload = encode_vec(&RdpdrPdu::UserLoggedon)
+        .map_err(|error| Error::Session(format!("encode RDPDR UserLoggedon: {error}")))?;
+    let mut messages = rdpdr
+        .process(&payload)
+        .map_err(|error| Error::Session(format!("RDPDR UserLoggedon: {error}")))?;
+    if messages.is_empty() {
+        // ClientIdConfirm may still be in flight (deferred), or the host skipped
+        // UserLoggedon entirely after confirm. Force a drive announce so Win+R
+        // can resolve `\\tsclient\OP\a.cmd`.
+        breadcrumb("drive_active_stage:rdpdr_user_loggedon empty, forcing drive announce");
+        let announce = rdpdr.add_drive(RDPDR_DEVICE_ID, RDPDR_SHARE_NAME.to_owned());
+        messages = vec![SvcMessage::from(RdpdrPdu::ClientDeviceListAnnounce(announce))];
+    }
+    write_rdpdr_messages(active_stage, framed, response_frames, messages, "device_announce")
+}
+
+/// Flush async filesystem IRP completions so remote reads/writes of `\\tsclient\OP`
+/// do not stall for ~30s waiting on unanswered deferred work.
+fn poll_rdpdr_deferred(
+    active_stage: &mut ActiveStage,
+    framed: &mut Framed<StreamOwned<ClientConnection, TcpStream>>,
+    response_frames: &mut u64,
+) -> Result<()> {
+    let Some(rdpdr) = active_stage.get_svc_processor_mut::<Rdpdr>() else {
+        return Ok(());
+    };
+    let messages = rdpdr
+        .poll_deferred_messages()
+        .map_err(|error| Error::Session(format!("RDPDR poll_deferred: {error}")))?;
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let frame = active_stage
+        .process_svc_processor_messages::<Rdpdr>(SvcProcessorMessages::new(messages))
+        .map_err(|error| Error::Session(format!("encode RDPDR deferred: {error}")))?;
+    if frame.is_empty() {
+        return Ok(());
+    }
+    framed
+        .write_all(&frame)
+        .map_err(|error| Error::Session(error.to_string()))?;
+    *response_frames += 1;
     Ok(())
 }
 

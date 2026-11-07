@@ -15,12 +15,14 @@ path = "src/bin/open-panel-rdp.rs"
 [dependencies]
 ironrdp-blocking = "0.12"
 ironrdp-connector = "0.12"
+ironrdp-core = "0.3"
 ironrdp-graphics = "0.11"
 ironrdp-pdu = "0.11"
 ironrdp-rdpdr = "0.9"
 ironrdp-rdpdr-native = "0.9"
 ironrdp-rdpsnd = "0.11"
 ironrdp-session = "0.13"
+ironrdp-svc = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sspi = { version = "0.23", default-features = false, features = ["network_client", "ring"] }

@@ -86,6 +86,7 @@ export {
 } from './remote-ironrdp.js';
 export {
     buildAlternateShellBootstrap,
+    buildInjectHttpBootstrap,
     startPackStageServer,
     waitForTcp,
 } from './remote-stage.js';

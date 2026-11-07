@@ -2,11 +2,12 @@
  * Remote install orchestration for `@wae/open-panel`.
  *
  * Windows primary channel: Rust RDP stack (`open-panel-rdp` / IronRDP) with
- * `Config::alternate_shell` after a forced fresh logon. Payload delivery prefers
- * RDPDR (`\\tsclient\OP`) so the remote does not need to reach the controller
- * over HTTP. Callers may still pass `--package-url`, `--remote-tarball`, or
- * `--pack-base-url` for HTTP staging. OpenSSH is not required. External RDP
- * CLIs are forbidden.
+ * force-fresh logon + Win+R inject of a short `cmd /c curl ?` bootstrap (same
+ * shape as the proven ntfy proof). Default payload delivery is HTTP staging
+ * (`i.ps1` + tarball); pass a remote-reachable `--pack-base-url` when the host
+ * cannot dial the controller LAN. RDPDR remains an opt-in fallback
+ * (`OPEN_PANEL_USE_RDPDR=1`) ? bare UNC in Run has never executed on lab hosts.
+ * OpenSSH is not required. External RDP CLIs are forbidden.
  */
 import { DEFAULT_WEBUI_PORT } from './defaults.js';
 import { AppError } from './errors.js';
@@ -50,10 +51,12 @@ export interface RemoteInstallTarget {
     /** Override controller pack base URL (e.g. public IP:port the remote can reach). */
     packBaseUrl?: string;
     /**
-     * Force HTTP pack staging instead of the default RDPDR share.
-     * Useful when the remote can reach the controller and RDPDR is disabled.
+     * Force HTTP pack staging (default). Set `false` only with
+     * `OPEN_PANEL_USE_RDPDR=1` for the legacy redirected-share path.
      */
     preferHttpStage?: boolean;
+    /** Optional ntfy.sh topic for remote progress (`boot`/`npm-ok`/`pw:?`/`up:8888`). */
+    ntfyTopic?: string;
 }
 
 export interface RemoteInstallHostResult {
@@ -147,7 +150,23 @@ async function installOneWindows(
         else if (target.packageUrl?.trim()) {
             shell = buildAlternateShellBootstrap(target.packageUrl.trim());
         }
-        else if (target.packBaseUrl?.trim() || target.preferHttpStage) {
+        else if (process.env.OPEN_PANEL_USE_RDPDR === '1' && target.preferHttpStage === false) {
+            // Opt-in only: lab hosts never executed bare UNC from Win+R.
+            rdpdrStage = prepareRdpdrStageDir({
+                pack,
+                serverPort,
+                skipStart: target.skipStart,
+            });
+            rdpdrDir = rdpdrStage.dir;
+            shell = buildInjectRdpdrLauncherShell();
+            stageInfo = {
+                baseUrl: `\\\\tsclient\\OP`,
+                scriptUrl: `\\\\tsclient\\OP\\a.cmd`,
+                tarballUrl: `\\\\tsclient\\OP\\${rdpdrStage.tarballName}`,
+            };
+        }
+        else {
+            // Default: HTTP stage + short curl Win+R bootstrap (ntfy-proven shape).
             const packBaseUrl = target.packBaseUrl?.trim();
             let stageListenPort: number | undefined;
             if (packBaseUrl) {
@@ -162,35 +181,20 @@ async function installOneWindows(
                     // Invalid override URLs still flow into startPackStageServer for a clear error.
                 }
             }
+            const ntfyTopic = (target.ntfyTopic ?? process.env.OPEN_PANEL_INSTALL_NTFY ?? '').trim();
             stage = await startPackStageServer({
                 pack,
                 baseUrl: packBaseUrl,
                 port: stageListenPort,
                 serverPort,
                 skipStart: target.skipStart,
+                ntfyTopic: ntfyTopic || undefined,
             });
             shell = buildAlternateShellBootstrap(stage.scriptUrl);
             stageInfo = {
                 baseUrl: stage.baseUrl,
                 scriptUrl: stage.scriptUrl,
                 tarballUrl: stage.tarballUrl,
-            };
-        }
-        else {
-            // Default: RDPDR share (works when remote cannot dial back to the controller).
-            rdpdrStage = prepareRdpdrStageDir({
-                pack,
-                serverPort,
-                skipStart: target.skipStart,
-            });
-            rdpdrDir = rdpdrStage.dir;
-            // Lab: AlternateShell after force-logon is ignored. Mainline is Win+R
-            // inject of the short RDPDR launcher `\\tsclient\OP\a.cmd`.
-            shell = buildInjectRdpdrLauncherShell();
-            stageInfo = {
-                baseUrl: `\\\\tsclient\\OP`,
-                scriptUrl: `\\\\tsclient\\OP\\a.cmd`,
-                tarballUrl: `\\\\tsclient\\OP\\${rdpdrStage.tarballName}`,
             };
         }
 
@@ -203,10 +207,9 @@ async function installOneWindows(
             sessionTimeoutSecs,
             rdpdrDir,
             rdpdrAckFile: rdpdrDir ? RDPDR_ACK_FILE : undefined,
-            // Force-fresh then Win+R inject (Unicode path typing). Do not rely on
-            // AlternateShell after force-logon on this lab host.
+            // Force-fresh then Win+R inject. AlternateShell alone is silent on lab hosts.
             forceFreshLogon: true,
-            injectRun: Boolean(rdpdrDir) || shell.includes('cmd /c'),
+            injectRun: true,
         });
 
         if (!exec.ok) {
@@ -222,10 +225,10 @@ async function installOneWindows(
                 url,
                 error: exec.error ?? 'RDP alternate_shell session failed',
                 next: rdpdrDir
-                    ? 'RDPDR staging was used. Confirm the host honors AlternateShell after force logoff and can download Node LTS from nodejs.org.'
+                    ? 'RDPDR staging was used. Prefer HTTP short curl Win+R (default); bare UNC has not proven on lab hosts.'
                     : stageInfo
-                    ? `Ensure the remote can reach staging URL \`${stageInfo.baseUrl}\` (set \`OPEN_PANEL_PACK_BASE_URL\` / \`--pack-base-url\`), or omit it to use RDPDR.`
-                    : 'Check AlternateShell policy on the host and retry.',
+                    ? `Ensure the remote can reach staging URL \`${stageInfo.baseUrl}\` (set \`OPEN_PANEL_PACK_BASE_URL\` / \`--pack-base-url\` to a public origin).`
+                    : 'Check Win+R inject on the host and retry.',
             };
         }
 

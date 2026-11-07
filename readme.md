@@ -36,12 +36,13 @@ pnpm --filter @wae/open-panel exec node ./dist/cli.js client --server-id local
 
 Windows 远端安装主通道是 **RDP(3389)**，由 Rust crate `open-panel-rdp`（IronRDP）实现协议栈；**禁止**依赖 `mstsc` / FreeRDP / `wfreerdp`，也**不**要求远端先装 OpenSSH。
 
-已打通：TCP→X.224/MCS/GCC→TLS→CredSSP 握手，以及 `Config::alternate_shell` + ActiveStage，并在 logon 后尝试 Win+R 键盘注入作为断开会话重连时的后备。安装产物投递策略：
+已打通：TCP→X.224/MCS/GCC→TLS→CredSSP 握手，以及 force-fresh logon 后的 Win+R 注入（lab 上 AlternateShell 单独无副作用）。安装产物投递策略：
 
-1. **默认**：控制器起临时 HTTP，远端用短 `powershell iwr …|iex`（AlternateShell ≤512 字节）拉取 `i.ps1` + tarball。需远端能访问控制器（可用 `--pack-base-url` / `OPEN_PANEL_PACK_BASE_URL`）。
-2. **已知远端路径**：`--remote-tarball` 指向主机上已有的 `.tgz`。
-3. **已有引导 URL**：`--package-url` 指向远端可拉的脚本。
-4. **下一步**：RDPDR 盘符重定向投递（无 SSH、远端也够不到控制器时的主路径），以及确认服务器端「单会话重连」策略下 AlternateShell / 注入真正落地。公网优先 npm；包仍为 `0.0.0` 时本地 `npm pack`。
+1. **默认**：控制器起临时 HTTP，远端 Win+R 注入短 `cmd /c curl.exe -fsSL -o C:/Users/Public/op-i.ps1 …`（与已证 ntfy 路径同形，≤512 字节）拉取 `i.ps1` + tarball。远端必须能访问该 origin（局域网不可达时设 `--pack-base-url` / `OPEN_PANEL_PACK_BASE_URL` 为公网 URL）。可选 `OPEN_PANEL_INSTALL_NTFY` 收进度。
+2. **GitHub raw（公网兜底）**：`scripts/remote/op.cmd` + `install.ps1` + `wae-open-panel-0.0.0.tgz` 随 `dev` 分支发布；Win+R：`cmd /c curl -fsSL https://raw.githubusercontent.com/nyar-os/OpenPanel/dev/scripts/remote/op.cmd -o C:/Users/Public/op.cmd&call C:/Users/Public/op.cmd`（进度 topic `op-gh-raw-1107`，poll `https://ntfy.sh/<topic>/json`）。
+3. **已知远端路径**：`--remote-tarball` 指向主机上已有的 `.tgz`。
+4. **已有引导 URL**：`--package-url` 指向远端可拉的脚本。
+5. **RDPDR**：仅 `OPEN_PANEL_USE_RDPDR=1` 且显式关闭 HTTP 时启用；lab 上裸 `\\tsclient\OP\a.cmd` 从未执行成功。公网优先 npm；包仍为 `0.0.0` 时本地 `npm pack`。
 
 ```bash
 cargo build -p open-panel-rdp
