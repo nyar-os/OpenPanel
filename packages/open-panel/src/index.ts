@@ -44,14 +44,18 @@ export {
 } from './remote-probe.js';
 export {
     installRemote,
-    windowsBootstrapScript,
     type RemoteInstallHostResult,
     type RemoteInstallReport,
     type RemoteInstallTarget,
 } from './remote-install.js';
 export { packOpenPanel, passwordFromEnv } from './remote-pack.js';
-export { ensureFreeRdp, findFreeRdp } from './remote-freerdp.js';
-export { runRdpJob, type RdpJobResult } from './remote-rdp.js';
+export {
+    rdpHandshake,
+    rdpProbe,
+    resolveRdpBin,
+    type RdpHandshakeInput,
+    type RdpHandshakeReport,
+} from './remote-ironrdp.js';
 export { hostStatus } from './server.js';
 export {
     listNativeServices,
@@ -186,7 +190,7 @@ export async function runClient(options: ClientOptions = {}): Promise<string> {
     }
     const active = getActiveServer();
     const title = options.title
-        ?? (active ? `OpenPanel â€” ${active.label ?? active.id}` : undefined);
+        ?? (active ? `OpenPanel ¡ª ${active.label ?? active.id}` : undefined);
     writeRosterSnapshot(options.contentDir);
     const opened = openGui({
         contentDir: options.contentDir,

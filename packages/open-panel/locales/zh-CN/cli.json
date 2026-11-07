@@ -15,8 +15,7 @@
             "servers-path": "打印名册 JSON 路径",
             "remote": "探测远端端口并安装/升级远端 open-panel",
             "remote-probe": "探测主机的 SSH / RDP / WinRM / SMB 连通性",
-            "remote-install": "在远端安装或升级 `@wae/open-panel`",
-            "remote-bootstrap": "打印仅 RDP 可达时使用的 Windows 提升权限引导脚本"
+            "remote-install": "在远端安装或升级 `@wae/open-panel`"
         },
         "opt": {
             "actor": "审计 actor id（用户或代理名）",

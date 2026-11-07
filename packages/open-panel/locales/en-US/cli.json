@@ -15,8 +15,7 @@
             "servers-path": "Print the roster JSON path",
             "remote": "Probe remoting ports and install or upgrade a remote open-panel",
             "remote-probe": "Probe SSH / RDP / WinRM / SMB reachability on a host",
-            "remote-install": "Install or upgrade `@wae/open-panel` on a remote host",
-            "remote-bootstrap": "Print a Windows elevated bootstrap script for RDP-only hosts"
+            "remote-install": "Install or upgrade `@wae/open-panel` on a remote host"
         },
         "opt": {
             "actor": "Audit actor id (user or agent name)",

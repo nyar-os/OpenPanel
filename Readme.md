@@ -22,17 +22,16 @@ pnpm --filter @wae/open-panel exec node ./dist/cli.js client --server-id local
 
 名册默认路径：Windows `%APPDATA%/open-panel/servers.json`，其它平台 `~/.config/open-panel/servers.json`（可用 `OPEN_PANEL_CONFIG_DIR` 覆盖）。
 
-远端安装/升级（探测端口后选通道；密码只经环境变量）：
+Windows 远端安装主通道是 **RDP(3389)**，由 Rust crate `open-panel-rdp`（IronRDP）实现协议栈；**禁止**依赖 `mstsc` / FreeRDP / `wfreerdp`，也**不**要求远端先装 OpenSSH。当前已完成 TCP→X.224/MCS/GCC→TLS→CredSSP 握手；tarball 投递与 `alternate_shell` 执行安装是下一层。公网优先 npm；包仍为 `0.0.0` 时本地 `npm pack`。
 
 ```bash
+cargo build -p open-panel-rdp
+# password is NEVER passed as a CLI flag / never committed
+$env:OPEN_PANEL_REMOTE_PASSWORD = '...'   # local shell only
+cargo run -p open-panel-rdp -- handshake --host 203.0.113.10 --user Administrator --password-env OPEN_PANEL_REMOTE_PASSWORD
 pnpm --filter @wae/open-panel exec node ./dist/cli.js remote probe --host 203.0.113.10
-# password is NEVER passed as a CLI flag
-set OPEN_PANEL_REMOTE_PASSWORD=...   # local shell only
-pnpm --filter @wae/open-panel exec node ./dist/cli.js remote install --host 203.0.113.10 --user Administrator --password-env OPEN_PANEL_REMOTE_PASSWORD --pack-local
-pnpm --filter @wae/open-panel exec node ./dist/cli.js remote bootstrap-script --package @wae/open-panel
+pnpm --filter @wae/open-panel exec node ./dist/cli.js remote install --host 203.0.113.10 --user Administrator --password-env OPEN_PANEL_REMOTE_PASSWORD
 ```
-
-公网优先 npm。当前包版本仍是 `0.0.0` 占位时，`remote install` 会本地 `npm pack`。Windows 首连优先 RDP（需本机 FreeRDP：`OPEN_PANEL_FREERDP_PATH`）；若自动化 RDP 不可用，会写出交互式 bootstrap 脚本，绝不假装 SSH 已通。
 
 `open-panel server` HTTP API（`/api/v0/...`，兼 `/api/...`）：
 
@@ -45,8 +44,9 @@ pnpm --filter @wae/open-panel exec node ./dist/cli.js remote bootstrap-script --
 | 路径 | 职责 |
 |------|------|
 | `crates/core` | 运维领域能力与三态失败合同 |
+| `crates/rdp` | Windows RDP 协议客户端（IronRDP，远程安装主通道） |
 | `crates/napi` | 平台中立 N-API 面（含桌面 GUI 宿主） |
-| `packages/open-panel` | 元包、类型库、CLI（`client` / `server`） |
+| `packages/open-panel` | 元包、类型库、CLI（`client` / `server` / `remote`） |
 | `packages/open-panel-gui` | 桌面客户端 UI（仅 `client`） |
 | `packages/open-panel-webui` | 服务端 WebUI（仅 `server`） |
 | `packages/open-panel-skills` | Agent 技能 |
