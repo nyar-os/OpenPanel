@@ -203,13 +203,11 @@ impl Default for RdpConnectOptions {
             work_dir: String::new(),
             timeout: Duration::from_secs(20),
             session_timeout: Duration::from_secs(180),
-            // Win+R / ActiveStage graphics abort on lab hosts; AlternateShell is the
-            // default delivery after force_fresh_logon.
-            inject_run_dialog: false,
-            settle: Duration::from_secs(12),
-            // Default on so disconnected single-user sessions cannot swallow
-            // Opt in via CLI `--force-fresh-logon` — lab hosts abort after force.
-            force_fresh_logon: false,
+            // Win+R after force_fresh_logon is the proven lab delivery path.
+            inject_run_dialog: true,
+            settle: Duration::from_secs(8),
+            // Default on so disconnected sessions cannot swallow the payload.
+            force_fresh_logon: true,
             logoff_timeout: Duration::from_secs(45),
             rdpdr_share_dir: None,
         }
@@ -411,15 +409,15 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     let work_dir = options.work_dir.clone();
     let session_timeout = options.session_timeout;
     let settle = options.settle;
-    // After a successful force-logoff, Windows honors Client Info AlternateShell.
-    // Prefer that path: Win+R needs a long-lived graphics desktop and FastPath
-    // decode has aborted this process on the lab host (native AV, exit -1).
-    // Win+R remains the reconnect fallback when force_fresh_logon is off.
-    let inject_run_dialog = options.inject_run_dialog && !forced_fresh_logon;
+    // Lab evidence: AlternateShell alone produced no remote side effects after a
+    // successful force-logoff (ntfy silent). Win+R after force-logoff is proven
+    // (logoff pass reaches ServerTerminate with FastPath skipped). Keep inject
+    // enabled even when forced_fresh_logon is true.
+    let inject_run_dialog = options.inject_run_dialog;
     let mut connect_opts = options;
     let mut desktop_for_inject = false;
     if inject_run_dialog {
-        // Desktop + Win+R only: empty AlternateShell so Explorer is present.
+        // Desktop + Win+R: empty AlternateShell so Explorer is present.
         connect_opts.alternate_shell.clear();
         connect_opts.work_dir.clear();
         desktop_for_inject = true;
@@ -515,57 +513,54 @@ struct LogoffPassReport {
     layers: Vec<&'static str>,
 }
 
-/// Connect a full desktop and inject `logoff` via Win+R, then wait for the
-/// session to end so the next connect starts a fresh logon.
+/// Connect with Client Info `AlternateShell=logoff` and hold without ActiveStage.
 ///
-/// Do not put `logoff` in Client Info AlternateShell: on reconnect it is ignored,
-/// which previously produced a false "force logon" (SessionTimeout after logon)
-/// and left the payload AlternateShell swallowed. Incoming FastPath decode is
-/// skipped inside [`drive_active_stage`] so graphics no longer abort the client.
+/// Win+R / ActiveStage graphics during logoff has aborted the lab client
+/// (empty stdout, exit -1). Soft-fail any connect/hold error so the payload
+/// pass still runs.
 fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
     let mut logoff_opts = options.clone();
-    // Full desktop so Win+R has Explorer; payload is keyboard-only.
-    logoff_opts.alternate_shell.clear();
-    logoff_opts.work_dir.clear();
-    logoff_opts.session_timeout = options.logoff_timeout.min(Duration::from_secs(45));
-    logoff_opts.settle = Duration::from_secs(4);
-    logoff_opts.inject_run_dialog = true;
+    logoff_opts.alternate_shell = "logoff".into();
+    logoff_opts.work_dir = String::new();
+    logoff_opts.session_timeout = options.logoff_timeout.min(Duration::from_secs(25));
+    logoff_opts.settle = Duration::from_secs(2);
+    logoff_opts.inject_run_dialog = false;
     logoff_opts.force_fresh_logon = false;
-    // Keep the logoff pass lean: RDPDR during tear-down races with session reset.
     logoff_opts.rdpdr_share_dir = None;
 
     let connected = match connect_session(logoff_opts) {
         Ok(value) => value,
         Err(error) if is_transport_gone_msg(&error.to_string()) => {
-            // Host already tearing down / refusing a second concurrent session.
             return Ok(LogoffPassReport {
                 end_reason: ExecEndReason::TransportClosed,
                 elapsed_ms: 0,
                 layers: vec!["force-logoff-connect-reset"],
             });
         }
-        Err(error) => return Err(error),
-    };
-
-    let active = match drive_active_stage(DriveActiveOpts {
-        connected,
-        session_timeout: options.logoff_timeout.min(Duration::from_secs(45)),
-        settle: Duration::from_secs(4),
-        inject_command: Some("logoff".into()),
-        layer_label: "force-logoff-active-stage",
-        // Logoff should tear the session down; do not hold past terminate.
-        hold_after_inject: false,
-    }) {
-        Ok(value) => value,
-        // Peer RST after typing `logoff` is the success signal, not a hard failure.
-        Err(error) if is_transport_gone_msg(&error.to_string()) => {
+        Err(error) => {
+            breadcrumb(&format!("run_logoff_pass:connect_soft_fail {error}"));
             return Ok(LogoffPassReport {
                 end_reason: ExecEndReason::TransportClosed,
                 elapsed_ms: 0,
-                layers: vec!["force-logoff-active-stage", "force-logoff-transport-gone"],
+                layers: vec!["force-logoff-connect-soft-fail"],
             });
         }
-        Err(error) => return Err(error),
+    };
+
+    let active = match hold_transport_without_graphics(
+        connected,
+        options.logoff_timeout.min(Duration::from_secs(25)),
+        "force-logoff-hold",
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            breadcrumb(&format!("run_logoff_pass:hold_soft_fail {error}"));
+            return Ok(LogoffPassReport {
+                end_reason: ExecEndReason::TransportClosed,
+                elapsed_ms: 0,
+                layers: vec!["force-logoff-hold", "force-logoff-hold-soft-fail"],
+            });
+        }
     };
 
     let mut layers = active.layers;
@@ -780,8 +775,9 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     inject_at = None;
                     let command = inject_command.as_deref().unwrap_or("");
                     if logon_seen {
-                        // Fresh logon desktops need Explorer to finish before Win+R.
-                        std::thread::sleep(Duration::from_secs(if hold_after_inject { 5 } else { 2 }));
+                        // Brief pause for Explorer; keep short so FastPath flood
+                        // cannot outrun the inject window on lab hosts.
+                        std::thread::sleep(Duration::from_secs(if hold_after_inject { 2 } else { 1 }));
                     }
                     match inject_run_dialog_command(
                         &mut active_stage,

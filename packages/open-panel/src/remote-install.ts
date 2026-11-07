@@ -199,6 +199,9 @@ async function installOneWindows(
             workDir: defaultWorkDir(),
             sessionTimeoutSecs,
             rdpdrDir,
+            // Lab IronRDP: force-logoff / Win+R abort. AlternateShell + sleep hold only.
+            forceFreshLogon: false,
+            injectRun: false,
         });
 
         if (!exec.ok) {
