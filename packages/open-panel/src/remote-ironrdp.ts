@@ -5,6 +5,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { AppError } from './errors.js';
@@ -75,6 +76,46 @@ export function resolveRdpBin(): string {
     });
 }
 
+/**
+ * Return a runnable path that will not lock the Cargo target exe.
+ *
+ * Concurrent `cargo build -p open-panel-rdp` fails with Windows os error 5 when
+ * another agent still holds `target/debug/open-panel-rdp.exe`. Lab verification
+ * also needs uniquely-named copies. Always copy out of the build dir (unless
+ * `OPEN_PANEL_RDP_BIN` already points outside `target/`).
+ */
+export function resolveRunnableRdpBin(): string {
+    const source = resolveRdpBin();
+    const override = process.env.OPEN_PANEL_RDP_BIN?.trim();
+    if (override && fs.existsSync(override)) {
+        const normalized = path.resolve(override).replace(/\\/g, '/').toLowerCase();
+        // Explicit lab copies (Temp / unique names) are used as-is.
+        if (!normalized.includes('/target/debug/') && !normalized.includes('/target/release/')) {
+            return override;
+        }
+    }
+
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const stamp = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const dest = path.join(os.tmpdir(), `open-panel-rdp-run-${stamp}${ext}`);
+    try {
+        fs.copyFileSync(source, dest);
+        if (process.platform !== 'win32') {
+            fs.chmodSync(dest, 0o755);
+        }
+    }
+    catch (error) {
+        throw new AppError({
+            code: 'dependency_blocked',
+            capability: 'remote-rdp',
+            message:
+                `failed to copy open-panel-rdp to a runnable path (${dest}): ` +
+                (error instanceof Error ? error.message : String(error)),
+        });
+    }
+    return dest;
+}
+
 function assertAuth(input: RdpHandshakeInput): { host: string, user: string } {
     const host = input.host.trim();
     const user = input.user.trim();
@@ -97,7 +138,7 @@ function assertAuth(input: RdpHandshakeInput): { host: string, user: string } {
 
 /** TCP probe via the Rust client. */
 export function rdpProbe(host: string, port = 3389): RdpHandshakeReport {
-    const bin = resolveRdpBin();
+    const bin = resolveRunnableRdpBin();
     const result = spawnSync(bin, ['probe', '--host', host, '--port', String(port)], {
         encoding: 'utf8',
         windowsHide: true,
@@ -108,7 +149,7 @@ export function rdpProbe(host: string, port = 3389): RdpHandshakeReport {
 /** Full IronRDP handshake through CredSSP / connection finalization. */
 export function rdpHandshake(input: RdpHandshakeInput): RdpHandshakeReport {
     const { host, user } = assertAuth(input);
-    const bin = resolveRdpBin();
+    const bin = resolveRunnableRdpBin();
     const args = [
         'handshake',
         '--host',
@@ -141,7 +182,7 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
         throw new AppError({ code: 'invalid_argument', message: '`--shell` / alternate_shell is required' });
     }
 
-    const bin = resolveRdpBin();
+    const bin = resolveRunnableRdpBin();
     // Pass the shell via env so Windows argv quoting cannot strip spaces/quotes
     // from EncodedCommand / powershell -Command payloads.
     const shellEnv = 'OPEN_PANEL_RDP_SHELL';

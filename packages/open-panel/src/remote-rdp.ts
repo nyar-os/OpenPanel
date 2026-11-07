@@ -6,6 +6,10 @@ export {
     rdpHandshake,
     rdpProbe,
     resolveRdpBin,
+    resolveRunnableRdpBin,
+    rdpExec,
+    type RdpExecInput,
+    type RdpExecReport,
     type RdpHandshakeInput,
     type RdpHandshakeReport,
 } from './remote-ironrdp.js';
