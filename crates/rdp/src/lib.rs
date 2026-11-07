@@ -634,74 +634,49 @@ fn connect_session_with_retry(options: RdpConnectOptions, after_logoff: bool) ->
 /// Lab hosts abort inside IronRDP graphics / FastPath decode (native AV, exit
 /// -1). `AlternateShell` / `logoff` already started at Client Info, so we only
 /// drain PDUs until timeout or peer close. Lab force-logoff pass completed with
-/// this drain-only path (`TransportClosed` after ~20 frames).
+/// Sleep with the RDP socket held. Do not call ActiveStage or `read_pdu`.
+///
+/// Lab hosts abort inside IronRDP FastPath parse (native AV, empty stdout).
+/// `AlternateShell` already started at Client Info — keep the session up so a
+/// detached bootstrap (`Start-Process` + RDPDR copy) can finish staging.
 fn hold_transport_without_graphics(
     connected: ConnectedSession,
     session_timeout: Duration,
     layer_label: &'static str,
 ) -> Result<ActiveDriveReport> {
-    breadcrumb(&format!("hold_transport:drain_only label={layer_label}"));
+    breadcrumb(&format!("hold_transport:sleep_only label={layer_label}"));
     let input_flags = connected.connection.input_flags.bits();
-    let mut framed = connected.framed;
-    {
-        let (stream, _) = framed.get_inner_mut();
-        stream
-            .sock
-            .set_read_timeout(Some(Duration::from_millis(500)))
-            .map_err(|error| Error::Session(error.to_string()))?;
-        stream
-            .sock
-            .set_write_timeout(Some(Duration::from_secs(20)))
-            .map_err(|error| Error::Session(error.to_string()))?;
-    }
-
     let started = Instant::now();
     let mut layers = connected.layers;
     layers.push(layer_label);
-    layers.push("hold-drain-only");
-    let mut response_frames = 0_u64;
-    let mut frames_seen = 0_u64;
+    layers.push("hold-sleep-only");
 
-    let end_reason = 'hold: {
-        loop {
-            if started.elapsed() >= session_timeout {
-                break 'hold ExecEndReason::SessionTimeout;
-            }
-            match framed.read_pdu() {
-                Ok((_action, _payload)) => {
-                    frames_seen += 1;
-                    response_frames += 1;
-                    if frames_seen <= 4 || frames_seen % 100 == 0 {
-                        breadcrumb(&format!("hold_transport:drain n={frames_seen}"));
-                    }
-                }
-                Err(error)
-                    if error.kind() == io::ErrorKind::WouldBlock
-                        || error.kind() == io::ErrorKind::TimedOut =>
-                {
-                    continue;
-                }
-                Err(error) if is_transport_gone_io(&error) => {
-                    breadcrumb("hold_transport:transport_gone");
-                    break 'hold ExecEndReason::TransportClosed;
-                }
-                Err(error) => return Err(Error::Session(error.to_string())),
-            }
-        }
-    };
+    let hold = session_timeout.min(Duration::from_secs(90));
+    breadcrumb(&format!("hold_transport:sleep_begin secs={}", hold.as_secs()));
+    let mut remaining = hold;
+    while !remaining.is_zero() {
+        let slice = remaining.min(Duration::from_secs(5));
+        std::thread::sleep(slice);
+        remaining = remaining.saturating_sub(slice);
+        breadcrumb(&format!(
+            "hold_transport:sleep_tick left_secs={}",
+            remaining.as_secs()
+        ));
+    }
+    breadcrumb("hold_transport:sleep_done");
 
-    breadcrumb(&format!(
-        "hold_transport:done end={end_reason:?} frames={frames_seen}"
-    ));
+    // Avoid rustls/IronRDP Drop abort after a no-read hold on lab hosts.
+    std::mem::forget(connected.framed);
+    layers.push("hold-forget-framed");
     Ok(ActiveDriveReport {
         host: connected.host,
         port: connected.port,
         remote_addr: connected.remote_addr.to_string(),
         local_addr: connected.local_addr.to_string(),
         layers,
-        end_reason,
+        end_reason: ExecEndReason::SessionTimeout,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        response_frames,
+        response_frames: 0,
         injected: false,
         input_flags,
     })
