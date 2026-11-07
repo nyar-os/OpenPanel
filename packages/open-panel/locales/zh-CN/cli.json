@@ -36,7 +36,6 @@
             "remote-user": "远端账户名（密码只通过 `--password-env` 传入）",
             "password-env": "存放远端密码的环境变量名",
             "remote-channel": "安装通道：`auto`、`rdp`、`ssh`、`winrm` 或 `none`",
-            "remote-package": "npm 包规格或本地 `.tgz` 路径",
             "pack-local": "强制把本地 workspace 包装成 tarball",
             "skip-start": "安装后不在远端启动 `open-panel server`"
         }

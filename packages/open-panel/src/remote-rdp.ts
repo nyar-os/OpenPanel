@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @deprecated Import from `./remote-ironrdp.js`. Kept as a thin re-export so stale
  * FreeRDP wrappers cannot return. External RDP CLIs are forbidden.
  */

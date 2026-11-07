@@ -190,7 +190,7 @@ export async function runClient(options: ClientOptions = {}): Promise<string> {
     }
     const active = getActiveServer();
     const title = options.title
-        ?? (active ? `OpenPanel ¡ª ${active.label ?? active.id}` : undefined);
+        ?? (active ? `OpenPanel â€” ${active.label ?? active.id}` : undefined);
     writeRosterSnapshot(options.contentDir);
     const opened = openGui({
         contentDir: options.contentDir,

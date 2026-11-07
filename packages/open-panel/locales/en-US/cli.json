@@ -36,7 +36,6 @@
             "remote-user": "Remote account name (password comes from `--password-env`)",
             "password-env": "Environment variable that holds the remote password",
             "remote-channel": "Install channel: `auto`, `rdp`, `ssh`, `winrm`, or `none`",
-            "remote-package": "npm package spec or local `.tgz` path",
             "pack-local": "Force packing the local workspace package as a tarball",
             "skip-start": "Install without starting `open-panel server` on the remote host"
         }

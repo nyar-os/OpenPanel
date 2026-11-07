@@ -115,7 +115,7 @@ function fail(options: ParsedOptions, ctx: CommandContext, error: unknown): numb
 function formatCapabilities(report: CapabilitiesReport): string {
     const lines = report.items.map((item) => {
         const state = item.state ?? 'supported';
-        const detail = item.detail ? ` ¡ª ${item.detail}` : '';
+        const detail = item.detail ? ` â€” ${item.detail}` : '';
         return `${item.id}: ${state}${detail}`;
     });
     if (report.notes.length) lines.push('', ...report.notes.map((note) => `note: ${note}`));
@@ -125,7 +125,7 @@ function formatCapabilities(report: CapabilitiesReport): string {
 function formatRoster(roster: ClientServerRoster): string {
     const lines = [`roster: ${rosterPath()}`, `active: ${roster.activeId ?? '(none)'}`, `servers: ${roster.servers.length}`];
     if (!roster.servers.length) {
-        lines.push('(empty ¡ª use `open-panel servers add`)');
+        lines.push('(empty â€” use `open-panel servers add`)');
         return lines.join('\n');
     }
     for (const server of roster.servers) {
@@ -255,7 +255,7 @@ servers.command('use', 'cli.cmd.servers-use')
                 options,
                 ctx,
                 rosterSnapshot(roster),
-                `active server: ${active?.id ?? id}${active ? ` ¡ú ${resolveServerUrl(active) ?? '(no url)'}` : ''}`,
+                `active server: ${active?.id ?? id}${active ? ` â†’ ${resolveServerUrl(active) ?? '(no url)'}` : ''}`,
             );
             return EXIT.OK;
         }
