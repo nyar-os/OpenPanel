@@ -142,6 +142,9 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
     }
 
     const bin = resolveRdpBin();
+    // Pass the shell via env so Windows argv quoting cannot strip spaces/quotes
+    // from EncodedCommand / powershell -Command payloads.
+    const shellEnv = 'OPEN_PANEL_RDP_SHELL';
     const args = [
         'exec',
         '--host',
@@ -152,8 +155,8 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
         input.passwordEnv,
         '--port',
         String(input.port ?? 3389),
-        '--shell',
-        shell,
+        '--shell-env',
+        shellEnv,
         '--session-timeout-secs',
         String(input.sessionTimeoutSecs ?? 180),
     ];
@@ -164,7 +167,7 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
     const result = spawnSync(bin, args, {
         encoding: 'utf8',
         windowsHide: true,
-        env: process.env,
+        env: { ...process.env, [shellEnv]: shell },
         // Install sessions can outlive the default spawn sync limits on busy hosts.
         // force_fresh_logon adds a preparatory logoff pass before the shell session.
         timeout: ((input.sessionTimeoutSecs ?? 180) + 90) * 1000,
@@ -186,9 +189,35 @@ function parseJson(stdout: string | null, stderr: string | null, status: number 
             });
         }
     }
+
+    // Prefer the last JSON object printed on stderr (panic hook / flush path).
+    const errText = (stderr ?? '').trim();
+    if (errText) {
+        const jsonLine = [...errText.split(/\r?\n/)]
+            .reverse()
+            .find((line) => line.trimStart().startsWith('{') && line.includes('"ok"'));
+        if (jsonLine) {
+            try {
+                return JSON.parse(jsonLine) as RdpHandshakeReport;
+            }
+            catch {
+                // fall through to structured empty-output error
+            }
+        }
+    }
+
+    const signedStatus = status == null ? null : status > 0x7fffffff ? status - 0x100000000 : status;
+    const crumbs = errText
+        .split(/\r?\n/)
+        .filter((line) => line.includes('[open-panel-rdp]'))
+        .slice(-8)
+        .join(' | ');
     throw new AppError({
         code: 'remote_rdp_failed',
         capability: 'remote-rdp',
-        message: stderr?.trim() || `open-panel-rdp exited with status ${status ?? 'null'}`,
+        message:
+            crumbs
+                ? `open-panel-rdp exited with status ${signedStatus ?? 'null'} and empty stdout; last crumbs: ${crumbs}`
+                : `open-panel-rdp exited with status ${signedStatus ?? 'null'} and empty stdout/stderr (process abort or external kill)`,
     });
 }

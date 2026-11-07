@@ -151,8 +151,9 @@ export function buildAlternateShellBootstrap(scriptUrl: string): string {
     if (!url) {
         throw new AppError({ code: 'invalid_argument', message: 'script URL is required for RDP bootstrap' });
     }
+    // Avoid `|` in Win+R payloads — some hosts drop or mis-type the pipe scancode.
     const shell =
-        `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "iwr -UseBasicParsing '${url}'|iex"`;
+        `powershell.exe -NoP -EP Bypass -c "iex((iwr -UseBasicParsing '${url}').Content)"`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',
@@ -165,11 +166,12 @@ export function buildAlternateShellBootstrap(scriptUrl: string): string {
 /** RDPDR share name announced by `open-panel-rdp` (`\\tsclient\OP`). */
 export const RDPDR_SHARE_NAME = 'OP';
 
-/** Short AlternateShell that waits for RDPDR then runs `\\tsclient\OP\i.ps1`. */
+/** Short AlternateShell that waits for RDPDR then detaches `\\tsclient\OP\i.ps1`. */
 export function buildRdpdrAlternateShellBootstrap(): string {
-    // sleep gives RDPDR time to announce before the script touches \\tsclient\OP.
+    // sleep: RDPDR announce. Start-Process: install outlives the RDP hold (IronRDP
+    // cannot safely drive ActiveStage graphics on some lab hosts).
     const shell =
-        `powershell.exe -NoP -EP Bypass -w Hidden -c "sleep 12; iex(gc -Raw ('\\\\tsclient\\${RDPDR_SHARE_NAME}\\i.ps1'))"`;
+        `powershell.exe -NoP -EP Bypass -w Hidden -c "sleep 10;Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoP','-EP','Bypass','-File','\\\\tsclient\\${RDPDR_SHARE_NAME}\\i.ps1'"`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',
