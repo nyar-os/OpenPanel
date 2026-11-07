@@ -36,6 +36,23 @@ export {
     type UpsertServerInput,
 } from './managed-servers.js';
 export { ensureConfigDir, resolveConfigDir, rosterPath } from './paths.js';
+export {
+    probeRemoteHost,
+    type RemoteChannel,
+    type RemotePortProbe,
+    type RemoteProbeReport,
+} from './remote-probe.js';
+export {
+    installRemote,
+    windowsBootstrapScript,
+    type RemoteInstallHostResult,
+    type RemoteInstallReport,
+    type RemoteInstallTarget,
+} from './remote-install.js';
+export { packOpenPanel, passwordFromEnv } from './remote-pack.js';
+export { ensureFreeRdp, findFreeRdp } from './remote-freerdp.js';
+export { runRdpJob, type RdpJobResult } from './remote-rdp.js';
+export { hostStatus } from './server.js';
 
 export type CapabilityState = 'unsupported_platform' | 'not_implemented' | 'dependency_blocked';
 

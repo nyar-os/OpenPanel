@@ -22,6 +22,8 @@ import {
     configureAudit,
     getActiveServer,
     loadServerRoster,
+    installRemote,
+    probeRemoteHost,
     removeServer,
     resolveServerUrl,
     rosterPath,
@@ -31,8 +33,10 @@ import {
     upsertServer,
     useServer,
     version,
+    windowsBootstrapScript,
     type CapabilitiesReport,
     type ClientServerRoster,
+    type RemoteChannel,
 } from './index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -267,6 +271,96 @@ servers.command('path', 'cli.cmd.servers-path')
             bootstrap(options, false);
             const file = rosterPath();
             emit(options, ctx, { path: file }, file);
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+const remote = cli.command('remote', 'cli.cmd.remote');
+
+remote.command('probe', 'cli.cmd.remote-probe')
+    .option('--host <host>', 'cli.opt.host')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const host = stringOption(options, 'host');
+            if (!host) throw new AppError({ code: 'invalid_argument', message: '`--host` is required' });
+            const report = await probeRemoteHost(host);
+            const lines = [
+                `host: ${report.host}`,
+                `recommended: ${report.recommendedChannel}`,
+                ...report.ports.map((port) => `${port.name}:${port.port} ${port.open ? 'open' : 'closed'}${port.latencyMs != null ? ` ${port.latencyMs}ms` : ''}`),
+                ...report.notes.map((note) => `note: ${note}`),
+            ];
+            emit(options, ctx, report, lines.join('\n'));
+            return EXIT.OK;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+remote.command('install', 'cli.cmd.remote-install')
+    .option('--host <host>', 'cli.opt.host')
+    .option('--user <name>', 'cli.opt.remote-user')
+    .option('--password-env <name>', 'cli.opt.password-env')
+    .option('--channel <name>', 'cli.opt.remote-channel')
+    .option('--server-port <n>', 'cli.opt.port')
+    .option('--server-id <id>', 'cli.opt.server-id')
+    .option('--label <text>', 'cli.opt.server-label')
+    .option('--skip-start', 'cli.opt.skip-start')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const host = stringOption(options, 'host');
+            const user = stringOption(options, 'user');
+            const passwordEnv = stringOption(options, 'password-env');
+            if (!host) throw new AppError({ code: 'invalid_argument', message: '`--host` is required' });
+            if (!user) throw new AppError({ code: 'invalid_argument', message: '`--user` is required' });
+            if (!passwordEnv) throw new AppError({ code: 'invalid_argument', message: '`--password-env` is required' });
+            const channelRaw = stringOption(options, 'channel') ?? 'auto';
+            const allowed = ['auto', 'rdp', 'ssh', 'winrm', 'none'] as const;
+            if (!(allowed as readonly string[]).includes(channelRaw)) {
+                throw new AppError({ code: 'invalid_argument', message: '`--channel` must be `auto`, `rdp`, `ssh`, `winrm`, or `none`' });
+            }
+            const report = await installRemote([{
+                host,
+                user,
+                passwordEnv,
+                channel: channelRaw === 'auto' ? 'auto' : channelRaw as RemoteChannel,
+                serverPort: integerOption(options, 'server-port'),
+                serverId: stringOption(options, 'server-id'),
+                label: stringOption(options, 'label'),
+                skipStart: flag(options, 'skip-start'),
+            }]);
+            const lines = [
+                `pack: ${report.pack.tarballPath}`,
+                `note: ${report.pack.note}`,
+                ...report.results.map((item) => {
+                    if (item.ok) {
+                        return `ok ${item.host} channel=${item.channel} url=${item.url ?? ''} roster=${item.rosterId ?? ''}`;
+                    }
+                    return `fail ${item.host}: ${item.error ?? 'unknown error'}`;
+                }),
+            ];
+            emit(options, ctx, report, lines.join('\n'));
+            return report.ok ? EXIT.OK : EXIT.FAILURE;
+        }
+        catch (error) {
+            return fail(options, ctx, error);
+        }
+    });
+
+remote.command('bootstrap-script', 'cli.cmd.remote-bootstrap')
+    .option('--package <spec>', 'cli.opt.remote-package')
+    .actionCtx(async (options, _args, ctx) => {
+        try {
+            bootstrap(options, false);
+            const spec = stringOption(options, 'package') ?? '@wae/open-panel';
+            const script = windowsBootstrapScript(spec);
+            emit(options, ctx, { script, packageSpec: spec }, script);
             return EXIT.OK;
         }
         catch (error) {

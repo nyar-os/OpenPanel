@@ -1,6 +1,6 @@
 {
     "cli": {
-        "intro": "open-panel — 本机运维面板（服务 / 站点 / 进程 / 日志）。同一安装物：`client` 桌面客户端，`server` WebUI，`servers` 多机名册。",
+        "intro": "open-panel — 本机运维面板（服务 / 站点 / 进程 / 日志）。同一安装物：`client` 桌面客户端，`server` WebUI，`servers` 多机名册，`remote` 探测/安装。",
         "cmd": {
             "capabilities": "报告领域能力及其可用性",
             "version": "打印原生插件版本",
@@ -12,7 +12,11 @@
             "servers-add": "新增或更新一条 server 登记",
             "servers-remove": "删除一条 server 登记",
             "servers-use": "切换当前活动 server",
-            "servers-path": "打印名册 JSON 路径"
+            "servers-path": "打印名册 JSON 路径",
+            "remote": "探测远端端口并安装/升级远端 open-panel",
+            "remote-probe": "探测主机的 SSH / RDP / WinRM / SMB 连通性",
+            "remote-install": "在远端安装或升级 `@wae/open-panel`",
+            "remote-bootstrap": "打印仅 RDP 可达时使用的 Windows 提升权限引导脚本"
         },
         "opt": {
             "actor": "审计 actor id（用户或代理名）",
@@ -29,7 +33,13 @@
             "limit": "审计记录条数上限",
             "server-id": "稳定的 managed server id",
             "server-label": "managed server 的人类可读标签",
-            "server-url": "WebUI 完整 base URL（例如 http://127.0.0.1:17890/）"
+            "server-url": "WebUI 完整 base URL（例如 http://127.0.0.1:17890/）",
+            "remote-user": "远端账户名（密码只通过 `--password-env` 传入）",
+            "password-env": "存放远端密码的环境变量名",
+            "remote-channel": "安装通道：`auto`、`rdp`、`ssh`、`winrm` 或 `none`",
+            "remote-package": "npm 包规格或本地 `.tgz` 路径",
+            "pack-local": "强制把本地 workspace 包装成 tarball",
+            "skip-start": "安装后不在远端启动 `open-panel server`"
         }
     }
 }

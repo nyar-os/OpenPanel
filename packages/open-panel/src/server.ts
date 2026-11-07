@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -78,6 +79,33 @@ function safeJoin(root: string, urlPath: string): string | null {
     return resolved;
 }
 
+function requestPath(url: string | undefined): string {
+    return decodeURIComponent((url ?? '/').split('?')[0] || '/');
+}
+
+/** Read-only host identity for multi-server status pulls. */
+export function hostStatus(): Record<string, unknown> {
+    return {
+        hostname: os.hostname(),
+        platform: process.platform,
+        arch: process.arch,
+        release: os.release(),
+        type: os.type(),
+        uptimeSec: Math.round(os.uptime()),
+        node: process.version,
+        pid: process.pid,
+        cwd: process.cwd(),
+    };
+}
+
+function writeJson(response: http.ServerResponse, status: number, body: unknown): void {
+    response.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+    });
+    response.end(`${JSON.stringify(body, null, 2)}\n`);
+}
+
 /** Start the local WebUI listener and return a handle. */
 export async function startServer(options: ServerOptions = {}): Promise<ServerHandle> {
     const host = options.host?.trim() || '127.0.0.1';
@@ -88,6 +116,15 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
     const contentDir = resolveContentDir(options.contentDir);
 
     const server = http.createServer((request, response) => {
+        const pathname = requestPath(request.url);
+        if (request.method === 'GET' && (pathname === '/api/host' || pathname === '/api/v0/host')) {
+            writeJson(response, 200, { ok: true, data: hostStatus() });
+            return;
+        }
+        if (pathname.startsWith('/api/')) {
+            writeJson(response, 404, { ok: false, error: { code: 'not_found', message: `unknown api path \`${pathname}\`` } });
+            return;
+        }
         const target = safeJoin(contentDir, request.url ?? '/');
         if (!target) {
             response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });

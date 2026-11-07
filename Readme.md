@@ -22,7 +22,19 @@ pnpm --filter @wae/open-panel exec node ./dist/cli.js client --server-id local
 
 名册默认路径：Windows `%APPDATA%/open-panel/servers.json`，其它平台 `~/.config/open-panel/servers.json`（可用 `OPEN_PANEL_CONFIG_DIR` 覆盖）。
 
-规划中：远端安装/升级同一套 `@wae/open-panel`（公网优先 npm；包仍为 `0.0.0` 未发布时用本地 `npm pack` / tarball 验收）。
+远端安装/升级（探测端口后选通道；密码只经环境变量）：
+
+```bash
+pnpm --filter @wae/open-panel exec node ./dist/cli.js remote probe --host 203.0.113.10
+# password is NEVER passed as a CLI flag
+set OPEN_PANEL_REMOTE_PASSWORD=...   # local shell only
+pnpm --filter @wae/open-panel exec node ./dist/cli.js remote install --host 203.0.113.10 --user Administrator --password-env OPEN_PANEL_REMOTE_PASSWORD --pack-local
+pnpm --filter @wae/open-panel exec node ./dist/cli.js remote bootstrap-script --package @wae/open-panel
+```
+
+公网优先 npm。当前包版本仍是 `0.0.0` 占位时，`remote install` 会本地 `npm pack`。Windows 首连优先 RDP（需本机 FreeRDP：`OPEN_PANEL_FREERDP_PATH`）；若自动化 RDP 不可用，会写出交互式 bootstrap 脚本，绝不假装 SSH 已通。
+
+`open-panel server` 提供只读 `GET /api/host`（兼 `/api/v0/host`）供 client 拉取主机名/OS 状态。
 
 ## 布局
 

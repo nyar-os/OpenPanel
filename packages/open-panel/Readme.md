@@ -18,3 +18,17 @@ pnpm --filter @wae/open-panel exec node ./dist/cli.js server --port 17890
 ```
 
 Override config directory with `OPEN_PANEL_CONFIG_DIR`.
+
+## Remote install
+
+```bash
+open-panel remote probe --host 203.0.113.10
+open-panel remote install --host 203.0.113.10 --user Administrator --password-env OPEN_PANEL_REMOTE_PASSWORD --pack-local
+open-panel remote bootstrap-script
+```
+
+Passwords only via `--password-env`. While `@wae/open-panel` remains unpublished / `0.0.0`, use `--pack-local`. Channels: `auto` (default), `rdp` (FreeRDP), `ssh`, `winrm`, `smb`. When FreeRDP is unavailable, install falls back to a bootstrap script for an interactive RDP session — it never pretends SSH worked.
+
+## Server status API
+
+`GET /api/host` and `GET /api/v0/host` return hostname / OS / Node identity for multi-server status pulls.

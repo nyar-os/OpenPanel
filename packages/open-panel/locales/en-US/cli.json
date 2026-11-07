@@ -1,6 +1,6 @@
 {
     "cli": {
-        "intro": "open-panel — local ops panel for services, sites, processes, and logs. One installable with `client` (desktop GUI), `server` (WebUI), and `servers` (multi-server roster).",
+        "intro": "open-panel — local ops panel for services, sites, processes, and logs. One installable with `client` (desktop GUI), `server` (WebUI), `servers` (roster), and `remote` (probe/install).",
         "cmd": {
             "capabilities": "Report domain capabilities and their availability",
             "version": "Print the native addon version",
@@ -12,7 +12,11 @@
             "servers-add": "Add or update a managed server entry",
             "servers-remove": "Remove a managed server entry",
             "servers-use": "Select the active managed server",
-            "servers-path": "Print the roster JSON path"
+            "servers-path": "Print the roster JSON path",
+            "remote": "Probe remoting ports and install or upgrade a remote open-panel",
+            "remote-probe": "Probe SSH / RDP / WinRM / SMB reachability on a host",
+            "remote-install": "Install or upgrade `@wae/open-panel` on a remote host",
+            "remote-bootstrap": "Print a Windows elevated bootstrap script for RDP-only hosts"
         },
         "opt": {
             "actor": "Audit actor id (user or agent name)",
@@ -29,7 +33,13 @@
             "limit": "Maximum number of audit records",
             "server-id": "Stable managed server id",
             "server-label": "Human label for the managed server",
-            "server-url": "Full WebUI base URL (e.g. http://127.0.0.1:17890/)"
+            "server-url": "Full WebUI base URL (e.g. http://127.0.0.1:17890/)",
+            "remote-user": "Remote account name (password comes from `--password-env`)",
+            "password-env": "Environment variable that holds the remote password",
+            "remote-channel": "Install channel: `auto`, `rdp`, `ssh`, `winrm`, or `none`",
+            "remote-package": "npm package spec or local `.tgz` path",
+            "pack-local": "Force packing the local workspace package as a tarball",
+            "skip-start": "Install without starting `open-panel server` on the remote host"
         }
     }
 }
