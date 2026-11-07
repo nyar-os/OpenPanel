@@ -16,9 +16,10 @@ import { packOpenPanel, passwordFromEnv } from './remote-pack.js';
 import { probeRemoteHost, type RemoteChannel, type RemoteProbeReport } from './remote-probe.js';
 import {
     buildAlternateShellBootstrap,
-    buildRdpdrAlternateShellBootstrap,
+    buildRdpdrProofCmdShell,
     defaultWorkDir,
     prepareRdpdrStageDir,
+    RDPDR_ACK_FILE,
     startPackStageServer,
     waitForTcp,
     type RdpdrStageDir,
@@ -78,7 +79,7 @@ export interface RemoteInstallReport {
 function buildRemotePathShell(remoteTarball: string, serverPort: number, skipStart: boolean): string {
     const pathLiteral = remoteTarball.replace(/'/g, "''");
     // Keep under the AlternateShell 512-byte cap. Credentials come from the
-    // package `postinstall` â†’ `open-panel install` path (same as npx / local).
+    // package `postinstall` ¡ú `open-panel install` path (same as npx / local).
     const start = skipStart
         ? ''
         : `;$c=Get-Command open-panel;Start-Process $c.Source -ArgumentList @('server','--host','0.0.0.0','--port','${serverPort}') -WindowStyle Hidden`;
@@ -183,10 +184,11 @@ async function installOneWindows(
                 skipStart: target.skipStart,
             });
             rdpdrDir = rdpdrStage.dir;
-            shell = buildRdpdrAlternateShellBootstrap();
+            // Short Win+R / AlternateShell target: p.cmd writes Public proof + RDPDR ack.
+            shell = buildRdpdrProofCmdShell();
             stageInfo = {
                 baseUrl: `\\\\tsclient\\OP`,
-                scriptUrl: `\\\\tsclient\\OP\\i.ps1`,
+                scriptUrl: `\\\\tsclient\\OP\\p.cmd`,
                 tarballUrl: `\\\\tsclient\\OP\\${rdpdrStage.tarballName}`,
             };
         }
@@ -199,11 +201,10 @@ async function installOneWindows(
             workDir: defaultWorkDir(),
             sessionTimeoutSecs,
             rdpdrDir,
-            // Lab IronRDP: force-logoff / Win+R abort. AlternateShell + sleep hold only.
-            // Lab IronRDP: force/inject ActiveStage aborts (exit -1). RDPDR
-            // AlternateShell + sleep/drain hold is the path that returns ok:true.
-            forceFreshLogon: false,
-            injectRun: false,
+            rdpdrAckFile: RDPDR_ACK_FILE,
+            // Proven smoke: force-fresh + Win+R. AlternateShell alone was silent on lab.
+            forceFreshLogon: true,
+            injectRun: true,
         });
 
         if (!exec.ok) {

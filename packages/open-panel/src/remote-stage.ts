@@ -167,19 +167,44 @@ export function buildAlternateShellBootstrap(scriptUrl: string): string {
 /** RDPDR share name announced by `open-panel-rdp` (`\\tsclient\OP`). */
 export const RDPDR_SHARE_NAME = 'OP';
 
-/** Short AlternateShell that waits for RDPDR then detaches `\\tsclient\OP\i.ps1`. */
-export function buildRdpdrAlternateShellBootstrap(): string {
-    // sleep: RDPDR announce. Start-Process: install outlives the RDP hold (IronRDP
-    // cannot safely drive ActiveStage graphics on some lab hosts).
-    const shell =
-        `powershell.exe -NoP -EP Bypass -w Hidden -c "sleep 10;Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoP','-EP','Bypass','-File','\\\\tsclient\\${RDPDR_SHARE_NAME}\\i.ps1'"`;
+/** Remote Public marker written by RDPDR proof / install bootstrap. */
+export const RDPDR_PROOF_PUBLIC = String.raw`C:\Users\Public\op-panel-proof.txt`;
+
+/** Local RDPDR ack filename read back by `open-panel-rdp` (primary proof). */
+export const RDPDR_ACK_FILE = 'op-ack.txt';
+
+/** Win+R / AlternateShell: run staged `p.cmd` from the RDPDR share. */
+export function buildRdpdrProofCmdShell(): string {
+    const shell = `cmd.exe /c \\\\tsclient\\${RDPDR_SHARE_NAME}\\p.cmd`;
     if (Buffer.byteLength(shell, 'utf8') + 1 > 510) {
         throw new AppError({
             code: 'invalid_argument',
-            message: `RDPDR alternate_shell bootstrap exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
+            message: `RDPDR proof shell exceeds MS-RDPBCGR 512-byte limit (${shell.length} chars)`,
         });
     }
     return shell;
+}
+
+/** Short AlternateShell that waits for RDPDR then detaches `\\tsclient\OP\i.ps1`. */
+export function buildRdpdrAlternateShellBootstrap(): string {
+    // Prefer the short `p.cmd` path (also used via Win+R) so proof + install share one entry.
+    return buildRdpdrProofCmdShell();
+}
+
+function writeRdpdrProofCmd(dir: string, startInstall: boolean): string {
+    const lines = [
+        '@echo off',
+        `echo OP-PROOF>%PUBLIC%\\op-panel-proof.txt`,
+        `copy /y %PUBLIC%\\op-panel-proof.txt \\\\tsclient\\${RDPDR_SHARE_NAME}\\${RDPDR_ACK_FILE} >nul`,
+    ];
+    if (startInstall) {
+        lines.push(
+            `start "" /b powershell.exe -NoP -EP Bypass -WindowStyle Hidden -File \\\\tsclient\\${RDPDR_SHARE_NAME}\\i.ps1`,
+        );
+    }
+    const cmdPath = path.join(dir, 'p.cmd');
+    fs.writeFileSync(cmdPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+    return cmdPath;
 }
 
 export interface RdpdrStageDir {
@@ -214,9 +239,18 @@ export function prepareRdpdrStageDir(options: {
     // Install script reads the pack from the redirected share (no HTTP origin).
     const scriptTemplate = buildInstallScript({ tarballName, serverPort, skipStart });
     const packRoot = `\\\\tsclient\\${RDPDR_SHARE_NAME}`;
-    const scriptBody = scriptTemplate.replaceAll('__OP_BASE__', packRoot);
+    // First lines also write the Public proof so a late i.ps1 start still acks.
+    const proofPrefix = [
+        `$ErrorActionPreference = "Continue"`,
+        `Set-Content -LiteralPath $env:PUBLIC\\op-panel-proof.txt -Value "OP-PROOF" -Encoding ascii`,
+        `Copy-Item -LiteralPath $env:PUBLIC\\op-panel-proof.txt -Destination "${packRoot}\\${RDPDR_ACK_FILE}" -Force`,
+        `$ErrorActionPreference = "Stop"`,
+        '',
+    ].join('\n');
+    const scriptBody = proofPrefix + scriptTemplate.replaceAll('__OP_BASE__', packRoot);
     const scriptPath = path.join(dir, 'i.ps1');
     fs.writeFileSync(scriptPath, scriptBody, 'utf8');
+    writeRdpdrProofCmd(dir, true);
     return {
         dir,
         scriptPath,
@@ -228,6 +262,23 @@ export function prepareRdpdrStageDir(options: {
             }
             catch {
                 // Staging cleanup must not mask install results.
+            }
+        },
+    };
+}
+
+/** Stage a proof-only RDPDR share (no tarball / install). */
+export function prepareRdpdrProofDir(): { dir: string, close: () => void } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-panel-rdpdr-proof-'));
+    writeRdpdrProofCmd(dir, false);
+    return {
+        dir,
+        close: () => {
+            try {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+            catch {
+                // Proof staging cleanup must not mask results.
             }
         },
     };

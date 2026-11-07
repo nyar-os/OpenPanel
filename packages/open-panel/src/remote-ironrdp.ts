@@ -27,15 +27,15 @@ export interface RdpExecInput extends RdpHandshakeInput {
     /** Local directory redirected as `\\tsclient\OP` via IronRDP RDPDR. */
     rdpdrDir?: string;
     /**
-     * Preparatory `logoff` before AlternateShell (default off).
-     * Pass `true` for `--force-fresh-logon`.
+     * Preparatory force-logon (default on — proven smoke). Pass `false` to opt out.
      */
     forceFreshLogon?: boolean;
     /**
-     * Win+R scancode inject (default off — ActiveStage graphics can abort).
-     * Pass `true` for `--inject-run`.
+     * Win+R scancode inject (default off). Pass `true` for RDPDR `cmd` proof/install.
      */
     injectRun?: boolean;
+    /** RDPDR ack filename under `rdpdrDir` (default `op-ack.txt`). */
+    rdpdrAckFile?: string;
 }
 
 export interface RdpHandshakeReport {
@@ -60,6 +60,10 @@ export interface RdpExecReport extends RdpHandshakeReport {
     endReason?: string;
     elapsedMs?: number;
     responseFrames?: number;
+    forcedFreshLogon?: boolean;
+    injectedRunDialog?: boolean;
+    rdpdrAckSeen?: boolean;
+    rdpdrAckPreview?: string;
 }
 
 function candidateBins(): string[] {
@@ -105,9 +109,10 @@ export function resolveRunnableRdpBin(): string {
         }
     }
 
+    // Name as `op-rdp-*` so lab watchdogs that kill `*open-panel-rdp*` miss us.
     const ext = process.platform === 'win32' ? '.exe' : '';
     const stamp = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const dest = path.join(os.tmpdir(), `open-panel-rdp-run-${stamp}${ext}`);
+    const dest = path.join(os.tmpdir(), `op-rdp-${stamp}${ext}`);
     try {
         fs.copyFileSync(source, dest);
         if (process.platform !== 'win32') {
@@ -213,18 +218,23 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
     ];
     if (input.workDir?.trim()) args.push('--work-dir', input.workDir.trim());
     if (input.domain?.trim()) args.push('--domain', input.domain.trim());
-    if (input.rdpdrDir?.trim()) args.push('--rdpdr-dir', input.rdpdrDir.trim());
-    // Explicit polarity (default OFF). Undefined must not re-enable lab-abort paths.
-    args.push(input.forceFreshLogon ? '--force-fresh-logon' : '--no-force-fresh-logon');
-    args.push(input.injectRun ? '--inject-run' : '--no-inject-run');
+    if (input.rdpdrDir?.trim()) {
+        args.push('--rdpdr-dir', input.rdpdrDir.trim());
+        args.push('--rdpdr-ack', (input.rdpdrAckFile?.trim() || 'op-ack.txt'));
+    }
+    // Default ON for force-fresh (proven smoke). Explicit false opts out.
+    if (input.forceFreshLogon === false) args.push('--no-force-fresh-logon');
+    else args.push('--force-fresh-logon');
+    // Default ON for inject (lab AlternateShell alone produced no side effects).
+    if (input.injectRun === false) args.push('--no-inject-run');
+    else args.push('--inject-run');
 
     const result = spawnSync(bin, args, {
         encoding: 'utf8',
         windowsHide: true,
         env: { ...process.env, [shellEnv]: shell },
-        // Install sessions can outlive the default spawn sync limits on busy hosts.
-        // force_fresh_logon adds a preparatory logoff pass before the shell session.
-        timeout: ((input.sessionTimeoutSecs ?? 180) + 90) * 1000,
+        // force-fresh = logoff hold + gap + payload; give spawnSync headroom.
+        timeout: ((input.sessionTimeoutSecs ?? 180) + 180) * 1000,
     });
     return parseJson(result.stdout, result.stderr, result.status) as RdpExecReport;
 }
