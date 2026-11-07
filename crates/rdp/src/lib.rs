@@ -186,6 +186,9 @@ pub struct RdpConnectOptions {
     /// Used to deliver install scripts / tarballs when the remote cannot reach
     /// the controller over HTTP. Requires co-advertising RDPSND (MS-RDPEFS).
     pub rdpdr_share_dir: Option<PathBuf>,
+    /// When set with [`Self::rdpdr_share_dir`], the hold loop exits early once
+    /// this filename appears in the share (remote wrote via `\\tsclient\OP`).
+    pub rdpdr_ack_file: Option<String>,
 }
 
 impl Default for RdpConnectOptions {
@@ -210,6 +213,7 @@ impl Default for RdpConnectOptions {
             force_fresh_logon: true,
             logoff_timeout: Duration::from_secs(45),
             rdpdr_share_dir: None,
+            rdpdr_ack_file: Some("op-ack.txt".into()),
         }
     }
 }
@@ -292,6 +296,10 @@ pub struct ExecReport {
     pub logoff_elapsed_ms: Option<u64>,
     /// Server Input capability flags (for diagnosing fast-path input support).
     pub input_flags: u16,
+    /// Whether the remote wrote the expected RDPDR ack file during the hold.
+    pub rdpdr_ack_seen: bool,
+    /// Short preview of the RDPDR ack file contents (when read).
+    pub rdpdr_ack_preview: Option<String>,
     /// Human notes / delivery reminders.
     pub notes: Vec<String>,
 }
@@ -409,15 +417,20 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     let work_dir = options.work_dir.clone();
     let session_timeout = options.session_timeout;
     let settle = options.settle;
-    // Lab evidence: AlternateShell alone produced no remote side effects after a
-    // successful force-logoff (ntfy silent). Win+R after force-logoff is proven
-    // (logoff pass reaches ServerTerminate with FastPath skipped). Keep inject
-    // enabled even when forced_fresh_logon is true.
+    let ack_expected = options.rdpdr_share_dir.is_some() && options.rdpdr_ack_file.is_some();
+    let rdpdr_ack_path = match (
+        options.rdpdr_share_dir.as_ref(),
+        options.rdpdr_ack_file.as_ref(),
+    ) {
+        (Some(dir), Some(name)) => Some(dir.join(name)),
+        _ => None,
+    };
+    // Keep caller inject flag as-is (including after force-fresh). Proof path uses
+    // Win+R `cmd \\tsclient\OP\proof.cmd` then RDPDR ack readback.
     let inject_run_dialog = options.inject_run_dialog;
     let mut connect_opts = options;
     let mut desktop_for_inject = false;
     if inject_run_dialog {
-        // Desktop + Win+R: empty AlternateShell so Explorer is present.
         connect_opts.alternate_shell.clear();
         connect_opts.work_dir.clear();
         desktop_for_inject = true;
@@ -427,9 +440,6 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     ));
     let connected = connect_session_with_retry(connect_opts, forced_fresh_logon)?;
     breadcrumb("run_alternate_shell:payload_connect_done");
-    // Client Info AlternateShell is already running after connect. Driving
-    // ActiveStage bitmap/FastPath decode has aborted this process on lab hosts
-    // (native AV). When we are not injecting Win+R, just hold the transport.
     let active = if inject_run_dialog {
         drive_active_stage(DriveActiveOpts {
             connected,
@@ -438,21 +448,27 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
             inject_command: Some(shell.clone()),
             layer_label: "alternate-shell-active-stage",
             hold_after_inject: true,
+            rdpdr_ack_path: rdpdr_ack_path.clone(),
         })?
     } else {
-        hold_transport_without_graphics(connected, session_timeout, "alternate-shell-hold")?
+        hold_transport_without_graphics(
+            connected,
+            session_timeout,
+            "alternate-shell-hold",
+            rdpdr_ack_path.clone(),
+        )?
     };
     breadcrumb(&format!(
-        "run_alternate_shell:active_done end={:?}",
-        active.end_reason
+        "run_alternate_shell:active_done end={:?} ack={}",
+        active.end_reason, active.rdpdr_ack_seen
     ));
 
     let mut layers = layers_prefix;
     layers.extend(active.layers);
 
-    // Win+R path must actually inject; AlternateShell path is accepted once the
-    // session reaches an end reason after Client Info carried the shell.
-    let delivered = if desktop_for_inject {
+    let delivered = if ack_expected {
+        active.rdpdr_ack_seen
+    } else if desktop_for_inject {
         active.injected
     } else {
         true
@@ -475,18 +491,19 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
         logoff_end_reason,
         logoff_elapsed_ms,
         input_flags: active.input_flags,
+        rdpdr_ack_seen: active.rdpdr_ack_seen,
+        rdpdr_ack_preview: active.rdpdr_ack_preview.clone(),
         notes: vec![
             if delivered {
-                "IronRDP alternate_shell session completed.".into()
+                "IronRDP session delivered a verified remote side-effect.".into()
+            } else if ack_expected {
+                "RDPDR ack file was not read back; remote payload did not prove.".into()
             } else {
                 "RDP session ended before the Win+R payload was injected.".into()
             },
-            "Payload delivery stays outside AlternateShell (512-byte wire cap). Use HTTP bootstrap or RDPDR.".into(),
+            "Primary proof is RDPDR write/readback of a Public marker, not ntfy.".into(),
             "force_fresh_logon clears disconnected single-user sessions before the payload pass.".into(),
-            if forced_fresh_logon {
-                "After force logoff, Client Info AlternateShell carries the payload (Win+R skipped)."
-                    .into()
-            } else if desktop_for_inject {
+            if desktop_for_inject {
                 "Win+R carries the payload on a full desktop (Client Info AlternateShell left empty)."
                     .into()
             } else {
@@ -494,12 +511,14 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
             },
             "External RDP CLIs (mstsc / freerdp / wfreerdp) are not part of this path.".into(),
             format!(
-                "endReason={:?} injectedRunDialog={} desktopForInject={} forcedFreshLogon={} delivered={} logoffEnd={:?} inputFlags={:#06x}",
+                "endReason={:?} injected={} desktopForInject={} forcedFresh={} delivered={} ackSeen={} ackPreview={:?} logoffEnd={:?} inputFlags={:#06x}",
                 active.end_reason,
                 active.injected,
                 desktop_for_inject,
                 forced_fresh_logon,
                 delivered,
+                active.rdpdr_ack_seen,
+                active.rdpdr_ack_preview,
                 logoff_end_reason,
                 active.input_flags
             ),
@@ -513,81 +532,115 @@ struct LogoffPassReport {
     layers: Vec<&'static str>,
 }
 
-/// Connect with Client Info `AlternateShell=logoff` and hold without ActiveStage.
+/// Connect a full desktop and inject `shutdown /l` via Win+R, then wait for the
+/// session to end so the next connect starts a fresh logon.
 ///
-/// Win+R / ActiveStage graphics during logoff has aborted the lab client
-/// (empty stdout, exit -1). Soft-fail any connect/hold error so the payload
-/// pass still runs.
+/// Do not put logoff in Client Info AlternateShell: on reconnect it is ignored,
+/// which previously produced a false "force logon" and left the payload swallowed.
+/// Incoming FastPath decode is skipped inside [`drive_active_stage`].
 fn run_logoff_pass(options: &RdpConnectOptions) -> Result<LogoffPassReport> {
     let mut logoff_opts = options.clone();
-    logoff_opts.alternate_shell = "logoff".into();
-    logoff_opts.work_dir = String::new();
-    logoff_opts.session_timeout = options.logoff_timeout.min(Duration::from_secs(25));
-    logoff_opts.settle = Duration::from_secs(2);
-    logoff_opts.inject_run_dialog = false;
+    // Full desktop so Win+R has Explorer; payload is keyboard-only.
+    logoff_opts.alternate_shell.clear();
+    logoff_opts.work_dir.clear();
+    logoff_opts.session_timeout = options.logoff_timeout.min(Duration::from_secs(45));
+    logoff_opts.settle = Duration::from_secs(8);
+    logoff_opts.inject_run_dialog = true;
     logoff_opts.force_fresh_logon = false;
+    // Keep the logoff pass lean: RDPDR during tear-down races with session reset.
     logoff_opts.rdpdr_share_dir = None;
 
-    let connected = match connect_session(logoff_opts) {
-        Ok(value) => value,
-        Err(error) if is_transport_gone_msg(&error.to_string()) => {
-            return Ok(LogoffPassReport {
-                end_reason: ExecEndReason::TransportClosed,
-                elapsed_ms: 0,
-                layers: vec!["force-logoff-connect-reset"],
-            });
-        }
-        Err(error) => {
-            breadcrumb(&format!("run_logoff_pass:connect_soft_fail {error}"));
-            return Ok(LogoffPassReport {
-                end_reason: ExecEndReason::TransportClosed,
-                elapsed_ms: 0,
-                layers: vec!["force-logoff-connect-soft-fail"],
-            });
-        }
-    };
+    let mut layers = Vec::new();
+    let mut last_end = ExecEndReason::SessionTimeout;
+    let mut last_elapsed = 0_u64;
 
-    let active = match hold_transport_without_graphics(
-        connected,
-        options.logoff_timeout.min(Duration::from_secs(25)),
-        "force-logoff-hold",
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            breadcrumb(&format!("run_logoff_pass:hold_soft_fail {error}"));
-            return Ok(LogoffPassReport {
-                end_reason: ExecEndReason::TransportClosed,
-                elapsed_ms: 0,
-                layers: vec!["force-logoff-hold", "force-logoff-hold-soft-fail"],
-            });
-        }
-    };
+    // Up to two Win+R attempts: lab hosts sometimes accept the first keystrokes
+    // without tearing the session down (ReadIdle / no-terminate).
+    for attempt in 1..=2_u32 {
+        let connected = match connect_session(logoff_opts.clone()) {
+            Ok(value) => value,
+            Err(error) if is_transport_gone_msg(&error.to_string()) => {
+                return Ok(LogoffPassReport {
+                    end_reason: ExecEndReason::TransportClosed,
+                    elapsed_ms: 0,
+                    layers: vec!["force-logoff-connect-reset"],
+                });
+            }
+            Err(error) => {
+                breadcrumb(&format!("run_logoff_pass:connect_soft_fail {error}"));
+                return Ok(LogoffPassReport {
+                    end_reason: ExecEndReason::TransportClosed,
+                    elapsed_ms: 0,
+                    layers: vec!["force-logoff-connect-soft-fail"],
+                });
+            }
+        };
 
-    let mut layers = active.layers;
-    layers.push("force-logoff-pass");
-    match active.end_reason {
-        ExecEndReason::ServerTerminate | ExecEndReason::TransportClosed => {
-            breadcrumb(&format!(
-                "run_logoff_pass:terminated end={:?} injected={}",
-                active.end_reason, active.injected
-            ));
-        }
-        other => {
-            // Soft-continue so install can still try, but mark clearly: without a
-            // real terminate the next AlternateShell is often ignored on reconnect.
-            layers.push("force-logoff-no-terminate");
-            breadcrumb(&format!(
-                "run_logoff_pass:no_terminate end={other:?} injected={}",
-                active.injected
-            ));
+        let active = match drive_active_stage(DriveActiveOpts {
+            connected,
+            session_timeout: options.logoff_timeout.min(Duration::from_secs(45)),
+            settle: Duration::from_secs(8),
+            // `shutdown /l` is more reliable than bare `logoff` in the Run dialog.
+            inject_command: Some("shutdown /l".into()),
+            layer_label: "force-logoff-active-stage",
+            hold_after_inject: false,
+            rdpdr_ack_path: None,
+        }) {
+            Ok(value) => value,
+            Err(error) if is_transport_gone_msg(&error.to_string()) => {
+                return Ok(LogoffPassReport {
+                    end_reason: ExecEndReason::TransportClosed,
+                    elapsed_ms: 0,
+                    layers: vec!["force-logoff-active-stage", "force-logoff-transport-gone"],
+                });
+            }
+            Err(error) => {
+                breadcrumb(&format!("run_logoff_pass:active_soft_fail {error}"));
+                return Ok(LogoffPassReport {
+                    end_reason: ExecEndReason::TransportClosed,
+                    elapsed_ms: 0,
+                    layers: vec!["force-logoff-active-soft-fail"],
+                });
+            }
+        };
+
+        layers.extend(active.layers);
+        last_end = active.end_reason;
+        last_elapsed = active.elapsed_ms;
+        match active.end_reason {
+            ExecEndReason::ServerTerminate | ExecEndReason::TransportClosed => {
+                layers.push("force-logoff-pass");
+                breadcrumb(&format!(
+                    "run_logoff_pass:terminated attempt={attempt} end={:?} injected={}",
+                    active.end_reason, active.injected
+                ));
+                return Ok(LogoffPassReport {
+                    end_reason: active.end_reason,
+                    elapsed_ms: active.elapsed_ms,
+                    layers,
+                });
+            }
+            other => {
+                layers.push("force-logoff-no-terminate");
+                breadcrumb(&format!(
+                    "run_logoff_pass:no_terminate attempt={attempt} end={other:?} injected={}",
+                    active.injected
+                ));
+                if attempt == 1 {
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+            }
         }
     }
+
+    layers.push("force-logoff-pass");
     Ok(LogoffPassReport {
-        end_reason: active.end_reason,
-        elapsed_ms: active.elapsed_ms,
+        end_reason: last_end,
+        elapsed_ms: last_elapsed,
         layers,
     })
 }
+
 
 /// After a forced logoff, Terminal Services may briefly refuse reconnects.
 fn connect_session_with_retry(options: RdpConnectOptions, after_logoff: bool) -> Result<ConnectedSession> {
@@ -624,44 +677,175 @@ fn connect_session_with_retry(options: RdpConnectOptions, after_logoff: bool) ->
     Err(last_error.unwrap_or_else(|| Error::Session("post-logoff reconnect failed".into())))
 }
 
-/// Keep the RDP transport open without calling ActiveStage.
+/// Hold the RDP session so Client Info `AlternateShell` can finish logon and so
+/// RDPDR can serve / receive files.
 ///
-/// Lab hosts abort inside IronRDP graphics / FastPath decode (native AV, exit
-/// -1). `AlternateShell` / `logoff` already started at Client Info, so we only
-/// drain PDUs until timeout or peer close. Lab force-logoff pass completed with
-/// Sleep with the RDP socket held. Do not call ActiveStage or `read_pdu`.
-///
-/// Lab hosts abort inside IronRDP FastPath parse (native AV, empty stdout).
-/// `AlternateShell` already started at Client Info — keep the session up so a
-/// detached bootstrap (`Start-Process` + RDPDR copy) can finish staging.
+/// Lab hosts abort inside IronRDP FastPath decode (native AV, exit -1). Skip
+/// FastPath payloads and drive X.224 through ActiveStage. After logon, keep
+/// processing (do **not** blind-sleep then disconnect) until:
+/// - the optional RDPDR ack file appears locally (remote wrote via `\\tsclient\OP`), or
+/// - `session_timeout` elapses / the peer terminates.
 fn hold_transport_without_graphics(
     connected: ConnectedSession,
     session_timeout: Duration,
     layer_label: &'static str,
+    rdpdr_ack_path: Option<PathBuf>,
 ) -> Result<ActiveDriveReport> {
-    breadcrumb(&format!("hold_transport:sleep_only label={layer_label}"));
+    breadcrumb(&format!("hold_transport:until_ack label={layer_label}"));
     let input_flags = connected.connection.input_flags.bits();
+    let desktop_width = connected.connection.desktop_size.width;
+    let desktop_height = connected.connection.desktop_size.height;
     let started = Instant::now();
     let mut layers = connected.layers;
     layers.push(layer_label);
-    layers.push("hold-sleep-only");
+    layers.push("hold-until-ack");
 
-    let hold = session_timeout.min(Duration::from_secs(90));
-    breadcrumb(&format!("hold_transport:sleep_begin secs={}", hold.as_secs()));
-    let mut remaining = hold;
-    while !remaining.is_zero() {
-        let slice = remaining.min(Duration::from_secs(5));
-        std::thread::sleep(slice);
-        remaining = remaining.saturating_sub(slice);
-        breadcrumb(&format!(
-            "hold_transport:sleep_tick left_secs={}",
-            remaining.as_secs()
-        ));
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_width, desktop_height);
+    let mut active_stage = ActiveStageBuilder {
+        static_channels: connected.connection.static_channels,
+        user_channel_id: connected.connection.user_channel_id,
+        io_channel_id: connected.connection.io_channel_id,
+        message_channel_id: connected.connection.message_channel_id,
+        share_id: connected.connection.share_id,
+        compression_type: connected.connection.compression_type,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
     }
-    breadcrumb("hold_transport:sleep_done");
+    .build();
 
-    // Avoid rustls/IronRDP Drop abort after a no-read hold on lab hosts.
-    std::mem::forget(connected.framed);
+    let mut framed = connected.framed;
+    {
+        let (stream, _) = framed.get_inner_mut();
+        stream
+            .sock
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .map_err(|error| Error::Session(error.to_string()))?;
+        stream
+            .sock
+            .set_write_timeout(Some(Duration::from_secs(20)))
+            .map_err(|error| Error::Session(error.to_string()))?;
+    }
+
+    let mut response_frames = 0_u64;
+    let mut frames_seen = 0_u64;
+    let mut logon_seen = false;
+    let mut ack_seen = false;
+    let mut ack_preview = None;
+    let mut deadline = started + session_timeout;
+    let logon_deadline = started + session_timeout.min(Duration::from_secs(25));
+
+    let end_reason = 'hold: {
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break 'hold ExecEndReason::SessionTimeout;
+            }
+            if !logon_seen && now >= logon_deadline {
+                breadcrumb("hold_transport:logon_deadline");
+                break 'hold ExecEndReason::ReadIdle;
+            }
+            if let Some(ack_path) = rdpdr_ack_path.as_ref() {
+                if !ack_seen && ack_path.is_file() {
+                    match std::fs::read_to_string(ack_path) {
+                        Ok(body) => {
+                            let trimmed = body.trim();
+                            if !trimmed.is_empty() {
+                                ack_seen = true;
+                                layers.push("rdpdr-ack-seen");
+                                ack_preview = Some(trimmed.chars().take(120).collect());
+                                breadcrumb(&format!(
+                                    "hold_transport:rdpdr_ack bytes={}",
+                                    trimmed.len()
+                                ));
+                                // Keep RDPDR briefly so a detached installer can copy.
+                                deadline = now
+                                    .checked_add(Duration::from_secs(20))
+                                    .unwrap_or(deadline)
+                                    .min(started + session_timeout);
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                } else if ack_seen && now >= deadline {
+                    break 'hold ExecEndReason::ReadIdle;
+                }
+            }
+
+            match framed.read_pdu() {
+                Ok((action, payload)) => {
+                    frames_seen += 1;
+                    if action == ironrdp_pdu::Action::FastPath {
+                        if !logon_seen {
+                            breadcrumb("hold_transport:skip_fastpath_pre_logon");
+                        }
+                        continue;
+                    }
+                    let outputs = match catch_unwind(AssertUnwindSafe(|| {
+                        active_stage.process(&mut image, action, &payload, None)
+                    })) {
+                        Ok(Ok(outputs)) => outputs,
+                        Ok(Err(error)) => {
+                            let message = error.to_string();
+                            if is_transport_gone_msg(&message) {
+                                break 'hold ExecEndReason::TransportClosed;
+                            }
+                            breadcrumb(&format!("hold_transport:process_err_skip {message}"));
+                            continue;
+                        }
+                        Err(panic) => {
+                            breadcrumb(&format!(
+                                "hold_transport:process_panic_skip {}",
+                                panic_message(&panic)
+                            ));
+                            continue;
+                        }
+                    };
+                    for out in outputs {
+                        match out {
+                            ActiveStageOutput::ResponseFrame(frame) => {
+                                if let Err(error) = framed.write_all(&frame) {
+                                    if is_transport_gone_io(&error) {
+                                        break 'hold ExecEndReason::TransportClosed;
+                                    }
+                                    return Err(Error::Session(error.to_string()));
+                                }
+                                response_frames += 1;
+                            }
+                            ActiveStageOutput::SaveSessionInfo { logon_complete } => {
+                                if logon_complete && !logon_seen {
+                                    logon_seen = true;
+                                    layers.push("save-session-info-logon");
+                                    breadcrumb("hold_transport:logon_complete");
+                                }
+                            }
+                            ActiveStageOutput::Terminate(_) => {
+                                breadcrumb("hold_transport:server_terminate");
+                                break 'hold ExecEndReason::ServerTerminate;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        || error.kind() == io::ErrorKind::TimedOut =>
+                {
+                    continue;
+                }
+                Err(error) if is_transport_gone_io(&error) => {
+                    breadcrumb("hold_transport:transport_gone");
+                    break 'hold ExecEndReason::TransportClosed;
+                }
+                Err(error) => return Err(Error::Session(error.to_string())),
+            }
+        }
+    };
+
+    breadcrumb(&format!(
+        "hold_transport:done end={end_reason:?} logon={logon_seen} ack={ack_seen} frames={frames_seen}"
+    ));
+
+    std::mem::forget(framed);
     layers.push("hold-forget-framed");
     Ok(ActiveDriveReport {
         host: connected.host,
@@ -669,11 +853,13 @@ fn hold_transport_without_graphics(
         remote_addr: connected.remote_addr.to_string(),
         local_addr: connected.local_addr.to_string(),
         layers,
-        end_reason: ExecEndReason::SessionTimeout,
+        end_reason,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        response_frames: 0,
+        response_frames,
         injected: false,
         input_flags,
+        rdpdr_ack_seen: ack_seen,
+        rdpdr_ack_preview: ack_preview,
     })
 }
 
@@ -684,6 +870,8 @@ struct DriveActiveOpts {
     inject_command: Option<String>,
     layer_label: &'static str,
     hold_after_inject: bool,
+    /// Local path under the RDPDR share; when present, exit early after inject.
+    rdpdr_ack_path: Option<PathBuf>,
 }
 
 struct ActiveDriveReport {
@@ -697,6 +885,8 @@ struct ActiveDriveReport {
     response_frames: u64,
     injected: bool,
     input_flags: u16,
+    rdpdr_ack_seen: bool,
+    rdpdr_ack_preview: Option<String>,
 }
 
 fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
@@ -775,10 +965,23 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     inject_at = None;
                     let command = inject_command.as_deref().unwrap_or("");
                     if logon_seen {
-                        // Brief pause for Explorer; keep short so FastPath flood
-                        // cannot outrun the inject window on lab hosts.
-                        std::thread::sleep(Duration::from_secs(if hold_after_inject { 2 } else { 1 }));
+                        // Brief pause for Explorer while still acking PDUs.
+                        let pause = Duration::from_secs(if hold_after_inject { 2 } else { 1 });
+                        let until = Instant::now() + pause;
+                        while Instant::now() < until {
+                            let _ = drain_incoming_pdus(
+                                &mut active_stage,
+                                &mut image,
+                                &mut framed,
+                                &mut response_frames,
+                            );
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
                     }
+                    breadcrumb(&format!(
+                        "drive_active_stage:inject_begin chars={}",
+                        command.chars().count()
+                    ));
                     match inject_run_dialog_command(
                         &mut active_stage,
                         &mut image,
@@ -791,6 +994,7 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                         Ok(()) => {
                             injected = true;
                             layers.push("win-r-scancode-inject");
+                            breadcrumb("drive_active_stage:inject_done");
                         }
                         Err(error) if is_transport_gone_msg(&error.to_string()) => {
                             // Peer RST while typing: logoff expects it; payload reports
@@ -1172,10 +1376,71 @@ fn write_paced_type_events(
     response_frames: &mut u64,
     text: &str,
 ) -> Result<()> {
-    for ch in text.chars() {
+    for (index, ch) in text.chars().enumerate() {
         write_input_events(active_stage, image, framed, response_frames, &build_char_events(ch))?;
         // Pace keystrokes so the Run dialog can accept them without dropping.
-        std::thread::sleep(Duration::from_millis(55));
+        std::thread::sleep(Duration::from_millis(35));
+        // Long payloads previously starved PDU reads and the server terminated the
+        // session mid-type (ServerTerminate with no remote side effect). Drain
+        // every few chars; FastPath is discarded, X.224 responses are acked.
+        if index % 4 == 3 {
+            drain_incoming_pdus(active_stage, image, framed, response_frames)?;
+        }
+    }
+    Ok(())
+}
+
+/// Read and handle pending PDUs without blocking long. FastPath is dropped;
+/// X.224 ResponseFrames are written back. Terminate / transport-gone bubble up.
+fn drain_incoming_pdus(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    framed: &mut Framed<StreamOwned<ClientConnection, TcpStream>>,
+    response_frames: &mut u64,
+) -> Result<()> {
+    for _ in 0..32 {
+        let (action, payload) = match framed.read_pdu() {
+            Ok(frame) => frame,
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.kind() == io::ErrorKind::TimedOut =>
+            {
+                return Ok(());
+            }
+            Err(error) if is_transport_gone_io(&error) => {
+                return Err(Error::Session(error.to_string()));
+            }
+            Err(error) => return Err(Error::Session(error.to_string())),
+        };
+        if action == ironrdp_pdu::Action::FastPath {
+            continue;
+        }
+        let outputs = match catch_unwind(AssertUnwindSafe(|| {
+            active_stage.process(image, action, &payload, None)
+        })) {
+            Ok(Ok(outputs)) => outputs,
+            Ok(Err(error)) => {
+                if is_transport_gone_msg(&error.to_string()) {
+                    return Err(Error::Session(error.to_string()));
+                }
+                continue;
+            }
+            Err(_) => continue,
+        };
+        for out in outputs {
+            match out {
+                ActiveStageOutput::ResponseFrame(frame) => {
+                    framed
+                        .write_all(&frame)
+                        .map_err(|error| Error::Session(error.to_string()))?;
+                    *response_frames += 1;
+                }
+                ActiveStageOutput::Terminate(_) => {
+                    return Err(Error::Session("server terminate while draining".into()));
+                }
+                _ => {}
+            }
+        }
     }
     Ok(())
 }

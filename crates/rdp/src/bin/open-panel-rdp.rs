@@ -121,7 +121,7 @@ fn panic_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 fn main() -> ExitCode {
-    // Always emit JSON on panic so Node façades never see an empty stdout crash.
+    // Always emit JSON on panic so Node fa?ades never see an empty stdout crash.
     std::panic::set_hook(Box::new(|info| {
         let message = info
             .payload()
@@ -232,16 +232,10 @@ fn main() -> ExitCode {
                 .unwrap_or("180")
                 .parse::<u64>()
                 .unwrap_or_else(|_| usage());
-            // Prefer explicit flags from the TS façade. Default ON when neither is set
-            // so disconnected single-user sessions still get a fresh AlternateShell.
-            let force_fresh_logon = if has_flag(&args, "--no-force-fresh-logon") {
-                false
-            } else if has_flag(&args, "--force-fresh-logon") {
-                true
-            } else {
-                true
-            };
-            let inject_run_dialog = !has_flag(&args, "--no-inject-run");
+            // Explicit flags from the TS fa?ade. Defaults OFF: force/inject ActiveStage has
+            // aborted lab clients (exit -1). Opt in with `--force-fresh-logon` / `--inject-run`.
+            let force_fresh_logon = has_flag(&args, "--force-fresh-logon");
+            let inject_run_dialog = has_flag(&args, "--inject-run");
             let rdpdr_share_dir = arg_value(&args, "--rdpdr-dir").map(PathBuf::from);
 
             eprintln!(
