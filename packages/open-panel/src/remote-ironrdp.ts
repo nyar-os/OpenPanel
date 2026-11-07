@@ -26,6 +26,13 @@ export interface RdpExecInput extends RdpHandshakeInput {
     sessionTimeoutSecs?: number;
     /** Local directory redirected as `\\tsclient\OP` via IronRDP RDPDR. */
     rdpdrDir?: string;
+    /**
+     * Preparatory `logoff` before AlternateShell (default on).
+     * Pass `false` to skip (`--no-force-fresh-logon`).
+     */
+    forceFreshLogon?: boolean;
+    /** Opt in to Win+R scancode inject (default off — graphics ActiveStage can abort). */
+    injectRun?: boolean;
 }
 
 export interface RdpHandshakeReport {
@@ -204,6 +211,8 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
     if (input.workDir?.trim()) args.push('--work-dir', input.workDir.trim());
     if (input.domain?.trim()) args.push('--domain', input.domain.trim());
     if (input.rdpdrDir?.trim()) args.push('--rdpdr-dir', input.rdpdrDir.trim());
+    if (input.forceFreshLogon === false) args.push('--no-force-fresh-logon');
+    if (input.injectRun) args.push('--inject-run');
 
     const result = spawnSync(bin, args, {
         encoding: 'utf8',
