@@ -39,7 +39,7 @@ Windows 远端安装主通道是 **RDP(3389)**，由 Rust crate `open-panel-rdp`
 已打通：TCP→X.224/MCS/GCC→TLS→CredSSP 握手，以及 force-fresh logon 后的 Win+R 注入（lab 上 AlternateShell 单独无副作用）。安装产物投递策略：
 
 1. **默认**：控制器起临时 HTTP，远端 Win+R 注入短 `cmd /c curl.exe -fsSL -o C:/Users/Public/op-i.ps1 …`（与已证 ntfy 路径同形，≤512 字节）拉取 `i.ps1` + tarball。远端必须能访问该 origin（局域网不可达时设 `--pack-base-url` / `OPEN_PANEL_PACK_BASE_URL` 为公网 URL）。可选 `OPEN_PANEL_INSTALL_NTFY` 收进度。
-2. **jsDelivr 公网兜底**（CN 上 `raw.githubusercontent.com` GET 常超时）：`scripts/remote/install.ps1` + `wae-open-panel-0.0.0.tgz` + `op.txt`（jsDelivr 禁 `.cmd`/`.bat`，故用 `.txt` 同内容）随 `dev` 发布。Win+R：`cmd /c curl.exe -fsSL -o C:/Users/Public/op.cmd https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@dev/scripts/remote/op.txt&call C:/Users/Public/op.cmd`（进度 topic `op-gh-raw-1107`，poll `https://ntfy.sh/<topic>/json`）。
+2. **jsDelivr 公网兜底**（CN 上 `raw.githubusercontent.com` GET 常超时；jsDelivr 对 `.cmd`/`.bat` 返回 403）：Win+R **直接拉** `install.ps1`（跳过 `op.cmd`）：`cmd /c curl -fsSL https://cdn.jsdelivr.net/gh/nyar-os/OpenPanel@dev/scripts/remote/install.ps1 -o C:/Users/Public/op-i.ps1&powershell -NoP -EP Bypass -File C:/Users/Public/op-i.ps1`。若 `@dev` CDN 未刷新，改 pin 完整 commit（如 `@951de5c`）。脚本内 tarball 同为 jsDelivr。进度 topic `op-gh-raw-1107`，poll `https://ntfy.sh/<topic>/json`。
 3. **已知远端路径**：`--remote-tarball` 指向主机上已有的 `.tgz`。
 4. **已有引导 URL**：`--package-url` 指向远端可拉的脚本。
 5. **RDPDR**：仅 `OPEN_PANEL_USE_RDPDR=1` 且显式关闭 HTTP 时启用；lab 上裸 `\\tsclient\OP\a.cmd` 从未执行成功。公网优先 npm；包仍为 `0.0.0` 时本地 `npm pack`。
