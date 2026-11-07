@@ -338,11 +338,18 @@ fn build_config(options: &RdpConnectOptions) -> ironrdp_connector::Config {
     }
 }
 
+fn ensure_crypto_provider() {
+    // rustls 0.23 needs an explicit process-level provider when multiple
+    // backends may be linked transitively (sspi / reqwest / ...).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 fn tls_upgrade(
     stream: TcpStream,
     server_name: &str,
     accept_invalid_certs: bool,
 ) -> Result<(StreamOwned<ClientConnection, TcpStream>, Vec<u8>)> {
+    ensure_crypto_provider();
     let builder = ClientConfig::builder();
     let mut config = if accept_invalid_certs {
         builder
