@@ -1,0 +1,19 @@
+[package]
+name = "open-panel-napi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Node-API bindings for open-panel (WAE facade + macros)"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "open_panel_napi"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+wae = { workspace = true }
+open-panel-core = { workspace = true }
