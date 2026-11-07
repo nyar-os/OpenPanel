@@ -116,6 +116,11 @@ pub fn capabilities() -> Capabilities {
             "local site inventory is not implemented in this skeleton",
         ),
         Capability::unavailable(
+            capability_ids::AUTO_SSL,
+            CapabilityState::NotImplemented,
+            "ACME SSL issue and renew is available as the `auto-ssl` crate but not wired into server yet",
+        ),
+        Capability::unavailable(
             capability_ids::PROCESSES,
             CapabilityState::NotImplemented,
             "local process inventory is not implemented in this skeleton",

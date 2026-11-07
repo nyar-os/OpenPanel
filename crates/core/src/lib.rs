@@ -17,3 +17,7 @@ pub mod platform;
 pub use audit::capability_ids;
 pub use error::{CapabilityState, Error, ErrorPayload, Result, capability_code};
 pub use platform::{Capabilities, Capability, Platform, capabilities, platform_arch, platform_name};
+
+/// Optional ACME SSL helpers (`auto-ssl` crate) for `open-panel server` site certificates.
+#[cfg(feature = "auto-ssl")]
+pub use auto_ssl as ssl;

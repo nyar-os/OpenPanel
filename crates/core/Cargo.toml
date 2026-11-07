@@ -8,6 +8,12 @@ repository.workspace = true
 description = "OpenPanel domain core (local ops panel semantics)"
 publish = false
 
+[features]
+default = []
+# Optional thin re-export of the ACME helper crate for server callers.
+auto-ssl = ["dep:auto-ssl"]
+
 [dependencies]
+auto-ssl = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

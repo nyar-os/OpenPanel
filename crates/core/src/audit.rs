@@ -20,6 +20,8 @@ pub mod capability_ids {
     pub const SERVICES: &str = "services";
     /// Local site inventory.
     pub const SITES: &str = "sites";
+    /// Free ACME SSL issue and renew for local sites.
+    pub const AUTO_SSL: &str = "auto-ssl";
     /// Local process inventory.
     pub const PROCESSES: &str = "processes";
     /// Local log access.
