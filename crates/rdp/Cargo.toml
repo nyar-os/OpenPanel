@@ -1,0 +1,27 @@
+[package]
+name = "open-panel-rdp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Rust RDP protocol client for Windows remote install (IronRDP-based)"
+publish = false
+
+[[bin]]
+name = "open-panel-rdp"
+path = "src/bin/open-panel-rdp.rs"
+
+[dependencies]
+ironrdp-blocking = "0.12"
+ironrdp-connector = "0.12"
+ironrdp-pdu = "0.11"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sspi = { version = "0.23", default-features = false, features = ["network_client", "ring"] }
+thiserror = { workspace = true }
+x509-cert = "0.2"
+
+# Sync TLS for CredSSP (NLA). Prefer ring on Windows controllers.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"

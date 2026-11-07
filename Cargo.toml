@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/auto-ssl", "crates/core", "crates/napi"]
-default-members = ["crates/auto-ssl", "crates/core", "crates/napi"]
+members = ["crates/auto-ssl", "crates/core", "crates/napi", "crates/rdp"]
+default-members = ["crates/auto-ssl", "crates/core", "crates/napi", "crates/rdp"]
 
 [workspace.package]
 version = "0.0.0"
