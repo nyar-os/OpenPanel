@@ -30,11 +30,37 @@
 
 #![deny(missing_docs)]
 
+use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Best-effort crash breadcrumb for lab diagnosis (ignored on failure).
+///
+/// Writes to `OPEN_PANEL_RDP_BREADCRUMB` when set, otherwise
+/// `%TEMP%/open-panel-rdp-breadcrumb.txt`, and mirrors the same line to stderr
+/// so Node façades can surface progress even when stdout is empty after a kill.
+fn breadcrumb(step: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let line = format!("{ts} {step}");
+    eprintln!("[open-panel-rdp] {line}");
+    let _ = io::stderr().flush();
+
+    let path = std::env::var_os("OPEN_PANEL_RDP_BREADCRUMB").unwrap_or_else(|| {
+        std::env::temp_dir()
+            .join("open-panel-rdp-breadcrumb.txt")
+            .into_os_string()
+    });
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+        let _ = file.flush();
+    }
+}
 
 use ironrdp_blocking::Framed;
 use ironrdp_connector::sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
@@ -340,6 +366,7 @@ fn is_transport_gone_msg(message: &str) -> bool {
 /// When `inject_run_dialog` is true, the shell is also typed into Win+R after
 /// settle as a reconnect fallback.
 pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
+    breadcrumb("run_alternate_shell:enter");
     validate_connect_options(&options, true)?;
 
     let mut forced_fresh_logon = false;
@@ -348,7 +375,12 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     let mut layers_prefix = Vec::new();
 
     if options.force_fresh_logon {
+        breadcrumb("run_alternate_shell:logoff_pass_begin");
         let logoff = run_logoff_pass(&options)?;
+        breadcrumb(&format!(
+            "run_alternate_shell:logoff_pass_done end={:?}",
+            logoff.end_reason
+        ));
         forced_fresh_logon = true;
         logoff_end_reason = Some(logoff.end_reason);
         logoff_elapsed_ms = Some(logoff.elapsed_ms);
@@ -363,27 +395,36 @@ pub fn run_alternate_shell(options: RdpConnectOptions) -> Result<ExecReport> {
     let work_dir = options.work_dir.clone();
     let session_timeout = options.session_timeout;
     let settle = options.settle;
-    let inject_run_dialog = options.inject_run_dialog;
-    // When Win+R injection is enabled, leave Client Info AlternateShell empty so
-    // Windows starts a normal desktop (Explorer). Putting the payload (or a sleep
-    // keeper) into AlternateShell either races a quick ServerTerminate or replaces
-    // Explorer so Win+R has no shell to type into. The payload rides Win+R only.
+    // After a successful force-logoff, Windows starts a fresh logon and honors
+    // Client Info AlternateShell. Prefer that path: Win+R scancode inject has
+    // aborted this client mid-graphics on the lab host (empty stdout, exit -1).
+    // Win+R remains the reconnect fallback when force_fresh_logon is off.
+    let inject_run_dialog = options.inject_run_dialog && !forced_fresh_logon;
     let mut connect_opts = options;
     let mut desktop_for_inject = false;
     if inject_run_dialog {
+        // Desktop + Win+R only: empty AlternateShell so Explorer is present.
         connect_opts.alternate_shell.clear();
         connect_opts.work_dir.clear();
         desktop_for_inject = true;
     }
+    breadcrumb(&format!(
+        "run_alternate_shell:payload_connect_begin inject={inject_run_dialog} desktop={desktop_for_inject}"
+    ));
     let connected = connect_session_with_retry(connect_opts, forced_fresh_logon)?;
+    breadcrumb("run_alternate_shell:payload_connect_done");
     let active = drive_active_stage(DriveActiveOpts {
         connected,
         session_timeout,
         settle,
         inject_command: inject_run_dialog.then(|| shell.clone()),
         layer_label: "alternate-shell-active-stage",
+        // Hold the transport while AlternateShell / install bootstrap runs.
         hold_after_inject: true,
-    })?;
+    })?;    breadcrumb(&format!(
+        "run_alternate_shell:active_done end={:?}",
+        active.end_reason
+    ));
 
     let mut layers = layers_prefix;
     layers.extend(active.layers);
@@ -563,11 +604,16 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
         hold_after_inject,
     } = opts;
 
+    breadcrumb(&format!(
+        "drive_active_stage:enter label={layer_label} desktop={}x{}",
+        connected.connection.desktop_size.width, connected.connection.desktop_size.height
+    ));
     let mut image = DecodedImage::new(
         PixelFormat::RgbA32,
         connected.connection.desktop_size.width,
         connected.connection.desktop_size.height,
     );
+    breadcrumb("drive_active_stage:image_ready");
     let mut active_stage = ActiveStageBuilder {
         static_channels: connected.connection.static_channels,
         user_channel_id: connected.connection.user_channel_id,
@@ -579,6 +625,7 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
         pointer_software_rendering: connected.connection.pointer_software_rendering,
     }
     .build();
+    breadcrumb("drive_active_stage:stage_built");
 
     let input_flags = connected.connection.input_flags.bits();
     let desktop_width = connected.connection.desktop_size.width;
@@ -595,6 +642,7 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
             .set_write_timeout(Some(Duration::from_secs(20)))
             .map_err(|error| Error::Session(error.to_string()))?;
     }
+    breadcrumb("drive_active_stage:loop_begin");
 
     let started = Instant::now();
     let mut response_frames = 0_u64;
@@ -608,6 +656,7 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
     } else {
         started + settle + Duration::from_secs(15)
     };
+    let mut frames_seen = 0_u64;
 
     let end_reason = 'active: {
         loop {
@@ -671,21 +720,37 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     break 'active ExecEndReason::ReadIdle;
                 }
                 Err(error) if is_transport_gone_io(&error) => {
+                    breadcrumb("drive_active_stage:read_transport_gone");
                     break 'active ExecEndReason::TransportClosed;
                 }
                 Err(error) => return Err(Error::Session(error.to_string())),
             };
 
+            frames_seen += 1;
+            if frames_seen <= 8 || frames_seen % 50 == 0 {
+                breadcrumb(&format!(
+                    "drive_active_stage:frame n={frames_seen} bytes={}",
+                    payload.len()
+                ));
+            }
+
             let outputs = match active_stage.process(&mut image, action, &payload, None) {
                 Ok(outputs) => outputs,
                 Err(error) => {
                     let message = error.to_string();
+                    breadcrumb(&format!("drive_active_stage:process_err {message}"));
                     if is_transport_gone_msg(&message) {
                         break 'active ExecEndReason::TransportClosed;
                     }
                     return Err(Error::Session(message));
                 }
             };
+            if frames_seen <= 8 {
+                breadcrumb(&format!(
+                    "drive_active_stage:process_ok n={frames_seen} outs={}",
+                    outputs.len()
+                ));
+            }
 
             for out in outputs {
                 match out {
