@@ -27,11 +27,14 @@ export interface RdpExecInput extends RdpHandshakeInput {
     /** Local directory redirected as `\\tsclient\OP` via IronRDP RDPDR. */
     rdpdrDir?: string;
     /**
-     * Preparatory `logoff` before AlternateShell (default on).
-     * Pass `false` to skip (`--no-force-fresh-logon`).
+     * Preparatory `logoff` before AlternateShell (default off).
+     * Pass `true` for `--force-fresh-logon`.
      */
     forceFreshLogon?: boolean;
-    /** Opt in to Win+R scancode inject (default off — graphics ActiveStage can abort). */
+    /**
+     * Win+R scancode inject (default off — ActiveStage graphics can abort).
+     * Pass `true` for `--inject-run`.
+     */
     injectRun?: boolean;
 }
 
@@ -211,12 +214,9 @@ export function rdpExec(input: RdpExecInput): RdpExecReport {
     if (input.workDir?.trim()) args.push('--work-dir', input.workDir.trim());
     if (input.domain?.trim()) args.push('--domain', input.domain.trim());
     if (input.rdpdrDir?.trim()) args.push('--rdpdr-dir', input.rdpdrDir.trim());
-    // Always pass an explicit flag so CLI default flips cannot re-enable lab-abort paths.
-    // Always pass an explicit force flag so CLI default churn cannot flip behavior.
-    if (input.forceFreshLogon === false) args.push('--no-force-fresh-logon');
-    else args.push('--force-fresh-logon');
-    if (input.injectRun) args.push('--inject-run');
-    else args.push('--no-inject-run');
+    // Explicit polarity (default OFF). Undefined must not re-enable lab-abort paths.
+    args.push(input.forceFreshLogon ? '--force-fresh-logon' : '--no-force-fresh-logon');
+    args.push(input.injectRun ? '--inject-run' : '--no-inject-run');
 
     const result = spawnSync(bin, args, {
         encoding: 'utf8',

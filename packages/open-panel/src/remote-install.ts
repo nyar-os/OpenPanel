@@ -200,6 +200,8 @@ async function installOneWindows(
             sessionTimeoutSecs,
             rdpdrDir,
             // Lab IronRDP: force-logoff / Win+R abort. AlternateShell + sleep hold only.
+            // Lab IronRDP: force/inject ActiveStage aborts (exit -1). RDPDR
+            // AlternateShell + sleep/drain hold is the path that returns ok:true.
             forceFreshLogon: false,
             injectRun: false,
         });
