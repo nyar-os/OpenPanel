@@ -1033,21 +1033,35 @@ fn drive_active_stage(opts: DriveActiveOpts) -> Result<ActiveDriveReport> {
                     inject_at = None;
                     let command = inject_command.as_deref().unwrap_or("");
                     if logon_seen {
-                        // Longer settle so Explorer owns the desktop before Win+R.
-                        let pause = Duration::from_secs(if hold_after_inject { 5 } else { 2 });
+                        // Short settle: long idle after logon previously hit peer RST
+                        // before inject_begin (lab ~7s TransportClosed).
+                        let pause = Duration::from_millis(if hold_after_inject { 1200 } else { 800 });
                         let until = Instant::now() + pause;
                         while Instant::now() < until {
-                            let _ = drain_incoming_pdus(
+                            if let Err(error) = drain_incoming_pdus(
                                 &mut active_stage,
                                 &mut image,
                                 &mut framed,
                                 &mut response_frames,
-                            );
-                            std::thread::sleep(Duration::from_millis(100));
+                            ) {
+                                let message = error.to_string();
+                                breadcrumb(&format!("drive_active_stage:settle_drain_err {message}"));
+                                if is_transport_gone_msg(&message)
+                                    || message.contains("server terminate while draining")
+                                {
+                                    layers.push("inject-transport-gone");
+                                    break 'active if message.contains("terminate") {
+                                        ExecEndReason::ServerTerminate
+                                    } else {
+                                        ExecEndReason::TransportClosed
+                                    };
+                                }
+                            }
+                            std::thread::sleep(Duration::from_millis(50));
                         }
                     }
                     breadcrumb(&format!(
-                        "drive_active_stage:inject_begin chars={}",
+                        "drive_active_stage:inject_begin chars={} inputFlags={input_flags:#06x}",
                         command.chars().count()
                     ));
                     match inject_run_dialog_command(
