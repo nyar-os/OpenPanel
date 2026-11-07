@@ -54,6 +54,24 @@ fn auth_options(args: &[String]) -> Result<(String, String, u16, Option<String>,
 }
 
 fn main() -> ExitCode {
+    // Always emit JSON on panic so Node façades never see an empty stdout crash.
+    std::panic::set_hook(Box::new(|info| {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|value| (*value).to_owned())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| info.to_string());
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": false,
+                "error": format!("open-panel-rdp panicked: {message}"),
+                "stack": "open-panel-rdp (IronRDP)",
+            })
+        );
+    }));
+
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         usage();
@@ -154,7 +172,7 @@ fn main() -> ExitCode {
                 timeout: Duration::from_secs(20),
                 session_timeout: Duration::from_secs(session_timeout_secs),
                 inject_run_dialog,
-                settle: Duration::from_secs(8),
+                settle: Duration::from_secs(12),
                 force_fresh_logon,
                 logoff_timeout: Duration::from_secs(45),
                 rdpdr_share_dir,
