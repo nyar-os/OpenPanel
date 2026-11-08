@@ -1,56 +1,71 @@
 /**
  * Build and release configuration for OpenPanel.
  *
- * This file is pure data so it can be parsed statically. `wae build` reads it
- * to order native → TypeScript → UI → skills validation → staging.
+ * Pure literals only: `wae` parses this file statically and never executes it.
+ * Build order is fixed: native → ts → ui → skills → staging. The GUI package is
+ * declared for `wae build`; the companion web UI is built by its own root script.
  */
 export default {
     native: {
         crate: 'open-panel-napi',
-        target: 'win32-x64',
         cdylib: 'open_panel_napi',
-        artifact: 'open-panel.win32-x64.node',
-        platformPackage: '@wae/open-panel-win32-x64',
+        targets: [
+            {
+                platform: 'win32',
+                arch: 'x64',
+                triple: 'x86_64-pc-windows-msvc',
+                package: '@wae/open-panel-win32-x64',
+                nodeFile: 'open-panel.win32-x64.node',
+                dir: 'packages/open-panel-win32-x64',
+            },
+        ],
     },
-    packages: {
-        native: {
+    packages: [
+        {
+            name: '@wae/open-panel-win32-x64',
             dir: 'packages/open-panel-win32-x64',
             os: ['win32'],
             cpu: ['x64'],
+            main: 'open-panel.win32-x64.node',
         },
-    },
+    ],
     build: {
-        order: ['native', 'typescript', 'ui', 'skills'],
-        ts: {
-            packages: ['@wae/open-panel'],
-        },
-        ui: {
-            packages: ['@wae/open-panel-gui', '@wae/open-panel-webui'],
-        },
+        ts: { packages: ['@wae/open-panel'] },
+        ui: { package: '@wae/open-panel-gui' },
+        stage: [
+            { from: 'packages/open-panel-gui/dist/static', to: 'packages/open-panel/dist/gui' },
+        ],
+        outputs: ['packages/open-panel/dist/cli.js', 'packages/open-panel/dist/gui/index.html'],
     },
     skills: {
-        dir: 'packages/open-panel-skills/skills',
-        packages: ['@wae/open-panel-skills'],
-        check: 'scripts/check-skills.ts',
+        packages: [
+            {
+                dir: 'packages/open-panel-skills/skills',
+                packageJson: 'packages/open-panel-skills/package.json',
+                appPackageJson: 'packages/open-panel/package.json',
+                cliEntry: 'packages/open-panel/dist/cli.js',
+                commandName: 'open-panel',
+            },
+        ],
     },
     release: {
-        packages: ['@wae/open-panel', '@wae/open-panel-skills', '@wae/open-panel-win32-x64'],
-        tag: 'vX.Y.Z',
+        registry: 'https://registry.npmjs.org',
+        tagPattern: '^v(\\d+\\.\\d+\\.\\d+)$',
+        packages: [
+            { name: '@wae/open-panel', dir: 'packages/open-panel' },
+            { name: '@wae/open-panel-skills', dir: 'packages/open-panel-skills' },
+            { name: '@wae/open-panel-win32-x64', dir: 'packages/open-panel-win32-x64' },
+        ],
     },
     ci: {
         repo: 'nyar-os/OpenPanel',
-        workflows: ['check-rust.yml', 'check-typescript.yml'],
+        workflows: ['check-rust.yml', 'check-typescript.yml', 'publish-npm.yml'],
+        requiredJobs: ['check-rust', 'check-typescript'],
     },
     install: {
-        shortcut: true,
-        perUser: true,
+        shortcutDefault: true,
     },
     audit: {
-        actorSources: {
-            cli: 'cli',
-            client: 'client',
-            server: 'server',
-            skill: 'skill',
-        },
+        actor: { kind: 'flag', id: 'flag', source: 'flag' },
     },
 };
